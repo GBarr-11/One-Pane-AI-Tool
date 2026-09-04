@@ -1,0 +1,17 @@
+{
+  "name": "one-pane",
+  "version": "0.1.0",
+  "private": true,
+  "description": "One Pane - AI-assisted reply drafting for the SMC ticketing console (prototype)",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "test": "node test/run-tests.js"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^0.71.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

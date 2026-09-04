@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "One Pane",
+  "version": "0.1.0",
+  "description": "Drafts a grounded reply into the SMC reply box and answers read-only ops questions without leaving the ticket.",
+
+  "permissions": ["storage"],
+
+  "host_permissions": [
+    "https://app.expedient.com/*",
+    "http://localhost:3000/*",
+    "http://localhost:8080/*"
+  ],
+
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["https://app.expedient.com/*", "http://localhost:3000/*"],
+      "js": ["src/content/loader.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "web_accessible_resources": [
+    {
+      "resources": ["src/content/*.js", "src/panel/*.js", "src/shared/*.js"],
+      "matches": ["https://app.expedient.com/*", "http://localhost:3000/*"]
+    }
+  ],
+
+  "options_page": "src/options/options.html",
+
+  "action": {
+    "default_title": "One Pane"
+  }
+}

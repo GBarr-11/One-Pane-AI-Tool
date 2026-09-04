@@ -1,0 +1,8 @@
+node_modules/
+*.log
+.DS_Store
+
+# Never commit credentials - SMC and Anthropic keys live here.
+.env
+.env.*
+!.env.example

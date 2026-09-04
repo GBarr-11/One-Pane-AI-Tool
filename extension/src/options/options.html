@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>One Pane — settings</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    max-width: 580px; margin: 40px auto; padding: 0 20px 60px;
+    color: #1c1c21; font-size: 14px; line-height: 1.5;
+  }
+  h1 { font-size: 19px; margin-bottom: 4px; }
+  h2 {
+    font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+    color: #8a8a99; margin: 34px 0 0; padding-bottom: 9px; border-bottom: 1px solid #eee;
+  }
+  .sub { color: #6b6b7b; margin-bottom: 10px; }
+  label.field { display: block; font-weight: 600; margin: 18px 0 5px; font-size: 13px; }
+  input[type="url"], select {
+    width: 100%; padding: 9px 11px; font-size: 13px; font-family: inherit;
+    border: 1px solid #e2e2ea; border-radius: 8px; background: #fff;
+  }
+  .note { font-size: 12px; color: #8a8a99; margin-top: 4px; }
+  .check { display: flex; gap: 10px; align-items: flex-start; margin: 16px 0; }
+  .check input { margin-top: 3px; flex: none; }
+  .check span { font-weight: 600; font-size: 13px; }
+  .row { display: flex; gap: 12px; align-items: flex-end; }
+  .row > div { flex: 1; }
+  button {
+    background: #4338ca; color: #fff;
+    border: none; border-radius: 9px; padding: 11px 20px;
+    font-size: 14px; font-weight: 700; font-family: inherit; cursor: pointer;
+  }
+  button:hover { background: #3a30b0; }
+  button.ghost { background: #fff; color: #45454f; border: 1px solid #e2e2ea; }
+  button.ghost:hover { background: #f7f7fb; }
+  .actions { margin-top: 28px; display: flex; gap: 10px; align-items: center; }
+  #status { font-size: 13px; font-weight: 600; color: #1a7f37; }
+  .health { margin-top: 14px; font-size: 12.5px; }
+  .health div { margin-top: 6px; }
+  .ok { color: #1a7f37; } .err { color: #b42318; }
+  code { background: #f4f4f8; border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<h1>One Pane</h1>
+<div class="sub">Drafts into the SMC reply box. Never sends.</div>
+
+<h2>Backends</h2>
+
+<label class="field" for="onePane">One Pane backend</label>
+<input type="url" id="onePane" placeholder="http://localhost:3000">
+<div class="note">Runs the draft pipeline — <code>npm start</code> in this repo.</div>
+
+<label class="field" for="aiCtrl">AI CTRL backend</label>
+<input type="url" id="aiCtrl" placeholder="http://localhost:8080">
+<div class="note">Cole's Mastra service. Read-only queries only.</div>
+
+<div class="health">
+  <div id="healthOnePane">One Pane — checking…</div>
+  <div id="healthAiCtrl">AI CTRL — checking…</div>
+</div>
+
+<h2>Panel</h2>
+
+<label class="field" for="side">Hangs from</label>
+<select id="side">
+  <option value="right">Top right</option>
+  <option value="left">Top left</option>
+</select>
+<div class="note">Drag the panel by its header to put it anywhere; drag the bottom-right corner to resize.</div>
+
+<div class="check">
+  <input type="checkbox" id="autoOpen">
+  <label for="autoOpen">
+    <span>Drop the panel down automatically</span>
+    <div class="note">Off by default — a panel that opens itself over someone's work is a panel they switch off.</div>
+  </label>
+</div>
+
+<div class="check">
+  <input type="checkbox" id="askEnabled">
+  <label for="askEnabled"><span>Show the "Ask AI CTRL" tab</span></label>
+</div>
+
+<div class="check">
+  <input type="checkbox" id="autoDraft">
+  <label for="autoDraft">
+    <span>Draft automatically when the panel opens</span>
+    <div class="note">Off by default — an unrequested draft on every ticket costs tokens and trains analysts to ignore the panel.</div>
+  </label>
+</div>
+
+<div class="actions">
+  <button id="save">Save</button>
+  <button class="ghost" id="reset">Reset size &amp; position</button>
+  <span id="status"></span>
+</div>
+
+<script type="module" src="options.js"></script>
+</body>
+</html>
