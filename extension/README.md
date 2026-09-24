@@ -28,7 +28,7 @@ and the notes list are identical, and no horizontal scrollbar appears.
 | Surface | Backend | What it does |
 |---|---|---|
 | **Draft reply** | One Pane (`/api/generate`) | Reads the ticket, retrieves techdocs + precedent, writes a grounded draft **into the reply box** |
-| **Ask AI CTRL** | One Pane (`/api/ask`) for now; AI CTRL (`/api/query`) once integrated | Answers read-only questions about the open ticket, from its thread and metadata only |
+| **Ask AI CTRL** | One Pane (`/api/ask`) for now; AI CTRL (`/api/query`) once integrated | Answers read-only questions about the open ticket, from its thread, metadata, and matching Confluence SOPs |
 
 ### Steering a draft
 

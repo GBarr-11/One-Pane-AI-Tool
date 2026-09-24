@@ -102,6 +102,15 @@ function recencyMultiplier(dateStr, asOf) {
   return 0.55;
 }
 
+/** Past this age a doc is flagged to the analyst and the model as possibly outdated. */
+const STALE_AFTER_MONTHS = 24;
+
+function isStale(dateStr, asOf) {
+  if (!dateStr) return false;
+  const months = (new Date(asOf) - new Date(dateStr)) / (1000 * 60 * 60 * 24 * 30.4);
+  return months > STALE_AFTER_MONTHS;
+}
+
 /**
  * The terms that count as curated signal for a doc.
  *
@@ -118,7 +127,8 @@ function curatedTerms(doc) {
 /**
  * Rank any list of techdoc-shaped docs against a ticket.
  *
- * @param {object[]} docs  `{id, title, category, updated, tags, body}`
+ * @param {object[]} docs  `{id, title, category, updated, tags, body}`, plus an
+ *   optional `weight` multiplier
  */
 function rankDocs(docs, ctx, { limit = 3, asOf = new Date().toISOString() } = {}) {
   const corpus = docs.map((d) => tokenize(`${d.title} ${d.body} ${curatedTerms(d).join(' ')}`));
@@ -132,7 +142,12 @@ function rankDocs(docs, ctx, { limit = 3, asOf = new Date().toISOString() } = {}
     // Category match is a strong structural signal the text alone may miss.
     if (categoryMatch) score *= 1.4;
     score *= recencyMultiplier(doc.updated, asOf);
-    return { doc, score, tagHits: countTagHits(q, curated), categoryMatch };
+    // A source's own judgement of the doc, e.g. Confluence ranks an SOP above a
+    // project page and a deprecated page well below both.
+    if (typeof doc.weight === 'number') score *= doc.weight;
+    return {
+      doc, score, tagHits: countTagHits(q, curated), categoryMatch, stale: isStale(doc.updated, asOf),
+    };
   })
     /*
      * A doc with no tag hit and no category match is matching on ambient

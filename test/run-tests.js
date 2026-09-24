@@ -28,8 +28,9 @@ const mockProvider = require('../onepane-mock/provider/mock');
 
 const { retrieveKnowledge, kbSourceName } = require('../server/knowledge');
 const {
-  storageToText, scrubSecrets, buildCql, queryTerms,
+  storageToText, scrubSecrets, buildCql, buildQueries, queryTerms, titleWeight, searchForContext,
 } = require('../server/confluence/search');
+const { answerQuestion } = require('../server/ask');
 
 // Pin the knowledge source: a shell that exports Confluence credentials must
 // not turn the test suite into live wiki traffic. Confluence tests opt in.
@@ -149,13 +150,74 @@ function fakeConfluence(calls, { searchStatus = 200 } = {}) {
     const u = new URL(url);
     calls.push({ url: u, init });
     if (u.pathname === '/wiki/rest/api/search') {
-      if (searchStatus !== 200 && u.searchParams.get('cql').includes('siteSearch')) {
+      if (searchStatus !== 200 && u.searchParams.get('cql').includes('ORDER BY')) {
         return fakeResponse(searchStatus, { message: 'bad cql' });
       }
       return fakeResponse(200, { results: [hit('101', 'SOC', 'Security Operations'), hit('202', 'HR', 'HR')] });
     }
     const m = /^\/wiki\/api\/v2\/pages\/(\d+)$/.exec(u.pathname);
     if (m && pages[m[1]]) return fakeResponse(200, pages[m[1]]);
+    return fakeResponse(404, { message: 'nope' });
+  };
+}
+
+/** An inline ticket like the live Zerto upgrade notice (#3767603), invented details. */
+const ZERTO_TICKET = {
+  id: '9990042',
+  subject: 'Zerto Upgrade Maintenance Notification',
+  problem: 'Zerto',
+  notes: [{
+    author: 'Client',
+    role: 'client',
+    at: '2026-08-28T14:00:00Z',
+    body: 'Will the Zerto upgrade impact our VPG replication? When is the ZVM being upgraded?',
+  }],
+};
+
+/**
+ * A fake Confluence built from what expedient-cloud really returned on
+ * 2026-09-24 for Zerto searches: the right pages mixed with off-topic ones, in
+ * no relevance order, and a deprecated page. Every query gets the same pool,
+ * as if relevance were no help at all - the local pre-rank and ranker must
+ * sort it out.
+ */
+function fakeZertoConfluence(calls) {
+  const page = (id, title, space, updated, body) => ({
+    id: String(id),
+    title,
+    space,
+    version: { createdAt: `${updated}T12:00:00Z` },
+    labels: { results: [] },
+    body: { storage: { value: `<p>${body}</p>` } },
+    _links: { webui: `/spaces/${space}/pages/${id}/${encodeURIComponent(title)}` },
+  });
+  const pages = [
+    page(998309913, 'Tamko - Juniper Switch Replacements', 'TO', '2026-07-13', 'Juniper switch replacement status per site.'),
+    page(996999177, 'EverPure fka Pure Storage', 'TO', '2026-03-17', 'About Pure Storage all-flash arrays.'),
+    page(3250716673, 'MOP - Zerto 10.8 Upgrade Project', 'PRE', '2026-08-14',
+      'Upgrade shared Zerto from 10U6 to 10U8. Upgrade the ZCM, then the ZVM appliance, then VRAs. VPG replication pauses during VRA upgrades.'),
+    page(1263435798, 'SOP - Zerto Upgrade Process for EEC', 'PRE', '2025-04-01',
+      'Snapshot the ZVM and ZVMDB appliances. Upgrade the ZVM from Appliance Upgrade. Upgrade outdated VRAs in bulk. VPGs resync after the upgrade.'),
+    page(75254234, '(Deprecated) SOP - Zerto Upgrade', 'TO', '2019-02-01',
+      'Upgrade Zerto 5.5 Update 4 with the Windows installer. VPG replication and ZVM upgrade.'),
+    page(2054750313, 'SOP - Zerto - ZVMA Troubleshooting Cheat Sheet', 'TO', '2026-08-18',
+      'Troubleshoot ZVMA containers and services.'),
+  ];
+  const byId = new Map(pages.map((p) => [p.id, p]));
+  const hit = (p) => ({
+    content: { id: p.id, title: p.title },
+    title: p.title,
+    excerpt: p.body.storage.value,
+    resultGlobalContainer: { title: p.space, displayUrl: `/spaces/${p.space}` },
+    lastModified: p.version.createdAt,
+  });
+
+  return async (url, init) => {
+    const u = new URL(url);
+    calls.push({ url: u, init });
+    if (u.pathname === '/wiki/rest/api/search') return fakeResponse(200, { results: pages.map(hit) });
+    const m = /^\/wiki\/api\/v2\/pages\/(\d+)$/.exec(u.pathname);
+    if (m && byId.has(m[1])) return fakeResponse(200, byId.get(m[1]));
     return fakeResponse(404, { message: 'nope' });
   };
 }
@@ -712,11 +774,31 @@ async function main() {
 
   await test('CQL escapes quotes and refuses unsafe space keys', async () => {
     await withConfluenceEnv({ CONFLUENCE_SPACES: 'SOC, NOC,bad" OR 1=1' }, () => {
-      const cql = buildCql(['say "hi"']);
-      assert.ok(cql.includes('siteSearch ~ "say \\"hi\\""'), cql);
+      const [cql] = buildQueries(['say "hi"'], ['say "hi"']);
+      assert.ok(cql.includes('title ~ "say \\"hi\\"*"'), cql);
       assert.ok(cql.includes('space in ("SOC","NOC")'), cql);
       assert.ok(!cql.includes('1=1'), cql);
     });
+  });
+
+  await test('queries anchor the product in a title, as prefixes, and never use siteSearch', async () => {
+    await withConfluenceEnv({ CONFLUENCE_SPACES: 'TO,PRE' }, () => {
+      const queries = buildQueries(['zerto', 'upgrade'], ['zerto', 'upgrade', 'vpg']);
+      // siteSearch ignores its terms on expedient-cloud; exact title terms can miss.
+      assert.ok(queries.every((q) => !q.includes('siteSearch')), queries.join('\n'));
+      assert.ok(queries.includes(buildCql('title ~ "zerto*"') + ' ORDER BY lastmodified DESC'), queries.join('\n'));
+      assert.ok(queries.includes(buildCql('title ~ "zerto*" AND text ~ "upgrade*"')), queries.join('\n'));
+      assert.ok(queries.includes(buildCql('title ~ "upgrade*" AND text ~ "zerto*"')), queries.join('\n'));
+      assert.ok(queries.length <= 6 && new Set(queries).size === queries.length);
+    });
+  });
+
+  await test('SOP-family titles rank up, retired pages rank well down', () => {
+    assert.strictEqual(titleWeight('MOP - Zerto 10.8 Upgrade Project'), 1.2);
+    assert.strictEqual(titleWeight('SOP - Zerto Upgrade Process for EEC'), 1.2);
+    assert.strictEqual(titleWeight('(Deprecated) SOP - Zerto Daily RPO Check Script'), 0.4);
+    assert.strictEqual(titleWeight('SOP - Zerto Daily Zerto Check Script (WIP)'), 0.4);
+    assert.strictEqual(titleWeight('Tamko - Juniper Switch Replacements'), 1);
   });
 
   await test('search terms come from the ticket, without ticket noise or numbers', () => {
@@ -769,12 +851,13 @@ async function main() {
       && u.pathname.startsWith('/ex/confluence/abc-123/wiki/')));
   });
 
-  await test('falls back from siteSearch to text search when the tenant rejects it', async () => {
+  await test('one rejected query is a warning, not an outage', async () => {
     await withConfluenceEnv({}, () => withFetch(fakeConfluence([], { searchStatus: 400 }), async () => {
       const ctx = buildContext(getTicket('3714582'), { asOf: AS_OF });
       const { docs, kb } = await retrieveKnowledge(ctx, { asOf: AS_OF, kbSource: 'confluence' });
-      assert.ok(docs.length >= 1);
-      assert.ok(kb.cql.includes('text ~'), kb.cql);
+      assert.ok(docs.length >= 1, 'the queries that worked should still find the SOP');
+      assert.ok(kb.warnings.some((w) => /One Confluence query failed/.test(w)), kb.warnings.join(' | '));
+      assert.ok(Array.isArray(kb.cql) && kb.cql.length > 1, JSON.stringify(kb.cql));
     }));
   });
 
@@ -798,6 +881,62 @@ async function main() {
       assert.strictEqual(doc.url, 'https://wiki.test/wiki/spaces/SOC/pages/101/SOP+VPN+MFA');
       assert.strictEqual(r.kb.source, 'confluence');
     }));
+  });
+
+  await test('Zerto upgrade ticket: the upgrade SOPs beat off-topic and retired pages (real result shapes)', async () => {
+    const calls = [];
+    await withConfluenceEnv({ CONFLUENCE_SPACES: 'TO,PRE,IKB' }, () => withFetch(fakeZertoConfluence(calls), async () => {
+      const ctx = buildContext(ZERTO_TICKET, { asOf: AS_OF });
+      const found = await searchForContext(ctx);
+      // Only the pre-ranked best get a full fetch, not every hit.
+      const fetched = calls.filter((c) => c.url.pathname.startsWith('/wiki/api/v2/pages/'));
+      assert.ok(fetched.length <= 8, `fetched ${fetched.length} pages`);
+      // Pre-rank order: the upgrade pages first, the off-topic ones last.
+      const order = found.docs.map((d) => d.title);
+      assert.ok(/Upgrade/.test(order[0]) && /Upgrade/.test(order[1]), order.join(' | '));
+      assert.ok(order.slice(-2).every((t) => /Juniper|Pure Storage/.test(t)), order.join(' | '));
+
+      const { docs } = await retrieveKnowledge(ctx, { asOf: AS_OF, kbSource: 'confluence' });
+      const titles = docs.map((d) => d.doc.title);
+      assert.ok(docs.length >= 1, 'expected Zerto upgrade docs');
+      assert.ok(/Zerto .*Upgrade|Upgrade .*Zerto/i.test(titles[0]), titles.join(' | '));
+      assert.ok(!titles.some((t) => /Deprecated|Juniper/.test(t)), titles.join(' | '));
+    }));
+  });
+
+  await test('a page over 2 years old is flagged in its citation', async () => {
+    await withConfluenceEnv({}, () => withFetch(fakeZertoConfluence([]), async () => {
+      const r = await generateDraft(ZERTO_TICKET, { provider: 'mock', asOf: '2030-01-01T00:00:00Z', kbSource: 'confluence' });
+      const doc = r.sources.find((s) => s.kind === 'techdoc');
+      assert.ok(doc, 'no techdoc source');
+      assert.match(doc.detail, /over 2 years old/);
+    }));
+  });
+
+  await test('Ask is grounded in Confluence too: the question anchors the search, sources come back linked', async () => {
+    const calls = [];
+    await withConfluenceEnv({ CONFLUENCE_SPACES: 'TO,PRE,IKB' }, () => withFetch(fakeZertoConfluence(calls), async () => {
+      const r = await answerQuestion(ZERTO_TICKET, 'How do we upgrade the ZVM appliance?', {
+        provider: 'mock', asOf: AS_OF, kbSource: 'confluence',
+      });
+      const cqls = calls.map((c) => c.url.searchParams.get('cql')).filter(Boolean);
+      assert.ok(cqls.some((q) => q.includes('"zvm*"')), cqls.join('\n'));
+      const doc = r.sources.find((s) => s.kind === 'techdoc');
+      assert.ok(doc, 'Ask returned no techdoc sources');
+      assert.ok(doc.url.startsWith('https://wiki.test/wiki/spaces/'), doc.url);
+      assert.strictEqual(r.kb.source, 'confluence');
+    }));
+  });
+
+  await test('the Ask prompt carries the techdocs, fenced as data', () => {
+    const { buildAskMessage } = require('../server/providers/claude');
+    const ctx = buildContext(ZERTO_TICKET, { asOf: AS_OF });
+    const doc = {
+      id: 'PRE-1', title: 'SOP - Zerto Upgrade Process for EEC', updated: '2025-04-01', body: 'Snapshot the ZVM first.',
+    };
+    const msg = buildAskMessage(ctx, 'how?', [{ doc, score: 5, stale: false }]);
+    assert.ok(msg.includes('<<<BEGIN_TECHDOC>>>\nSnapshot the ZVM first.\n<<<END_TECHDOC>>>'), msg);
+    assert.ok(buildAskMessage(ctx, 'how?').includes('No reference material matched'));
   });
 
   console.log('\nprecedent source');

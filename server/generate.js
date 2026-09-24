@@ -64,6 +64,22 @@ function resolveProvider(name) {
   return all[chosen]();
 }
 
+/**
+ * Ranked techdocs as panel citations, shared by Draft and Ask. A page past the
+ * staleness line says so, so the analyst checks it before trusting it.
+ */
+function techdocSources(docs) {
+  return docs.map(({ doc, score, stale }) => ({
+    kind: 'techdoc',
+    ref: doc.id,
+    label: doc.title,
+    detail: `${doc.source === 'confluence' ? `Confluence${doc.space ? ` · ${doc.space}` : ''} · ` : ''}Updated ${doc.updated}`
+      + `${stale ? ' · over 2 years old, check it is current' : ''}`,
+    url: techdocUrl(doc),
+    score: Number(score.toFixed(2)),
+  }));
+}
+
 /** Cap free-text steering so a paste into that box cannot become the prompt. */
 const MAX_INSTRUCTION_CHARS = 500;
 
@@ -104,14 +120,7 @@ async function generateDraft(ticket, opts = {}) {
   });
 
   const sources = [
-    ...docs.map(({ doc, score }) => ({
-      kind: 'techdoc',
-      ref: doc.id,
-      label: doc.title,
-      detail: `${doc.source === 'confluence' ? `Confluence${doc.space ? ` · ${doc.space}` : ''} · ` : ''}Updated ${doc.updated}`,
-      url: techdocUrl(doc),
-      score: Number(score.toFixed(2)),
-    })),
+    ...techdocSources(docs),
     ...precedent.map(({ ticket: t, score }) => ({
       kind: 'ticket',
       ref: `#${t.id}`,
@@ -194,5 +203,5 @@ async function getSuggestions(ticket, opts = {}) {
 }
 
 module.exports = {
-  generateDraft, getSuggestions, activeProviderName, availableProviders, resolveProvider,
+  generateDraft, getSuggestions, activeProviderName, availableProviders, resolveProvider, techdocSources,
 };

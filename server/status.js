@@ -44,7 +44,7 @@ const ENV_VARS = [
   { name: 'CONFLUENCE_EMAIL', group: 'Knowledge base', secret: false, about: 'Account the API token belongs to.' },
   { name: 'CONFLUENCE_API_TOKEN', group: 'Knowledge base', secret: true, about: 'Atlassian API token, server mode (or the shared account). Read-only use.' },
   { name: 'CONFLUENCE_CLOUD_ID', group: 'Knowledge base', secret: false, about: 'Only for scoped tokens.' },
-  { name: 'CONFLUENCE_SPACES', group: 'Knowledge base', secret: false, about: 'Space keys to search. Unset = every space the token sees.' },
+  { name: 'CONFLUENCE_SPACES', group: 'Knowledge base', secret: false, about: 'Space keys to search (TO,PRE,IKB hold the SOPs). Unset = every space the token sees.' },
   { name: 'CONFLUENCE_LABELS', group: 'Knowledge base', secret: false, about: 'Only pages with one of these labels.' },
   { name: 'ONEPANE_KB_SOURCE', group: 'Knowledge base', secret: false, about: 'auto | confluence. (mock only inside onepane-mock.)' },
   { name: 'SMC_BASE_URL', group: 'Links', secret: false, about: 'SMC web console, for ticket citation links.' },

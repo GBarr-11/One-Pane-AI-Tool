@@ -391,6 +391,7 @@ async function handleApi(req, res, url, entry) {
       const result = await answerQuestion(ticket, body.question, {
         provider: body.provider,
         asOf: asOfFor(body, origin),
+        ticketOrigin: origin,
       });
       noteResult(entry, ticket, origin, result);
       return sendJson(res, 200, {

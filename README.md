@@ -102,10 +102,11 @@ The offline `mock` provider exists only inside `onepane-mock`.
 
 ### Confluence knowledge base
 
-With Confluence configured, every draft searches the wiki for the ticket's
-topic and grounds the reply in the SOPs it finds. The search terms come from
-the ticket's subject, problem, and latest customer message. Results are cited
-in the panel with a link to the page.
+With Confluence ("TechDocs") configured, every draft and every Ask answer
+searches the wiki for the ticket's topic and grounds the response in the SOPs
+it finds. The search terms come from the ticket's subject, problem, and latest
+customer message, plus the question on the Ask tab. Results are cited in the
+panel with a link to the page.
 
 1. Create an API token at
    <https://id.atlassian.com/manage-profile/security/api-tokens> →
@@ -119,7 +120,7 @@ in the panel with a link to the page.
    CONFLUENCE_SITE_URL=https://expedient-cloud.atlassian.net
    CONFLUENCE_EMAIL=you@expedient.com
    CONFLUENCE_API_TOKEN=<the token>
-   CONFLUENCE_SPACES=<SOP space keys, comma-separated>
+   CONFLUENCE_SPACES=TO,PRE,IKB
    ```
 3. Restart the server. The Control Center's Knowledge Base card turns green
    once the credential is accepted, and **Diagnostics → Confluence Search**
@@ -128,12 +129,22 @@ in the panel with a link to the page.
 
 How it works:
 
-- **Search:** CQL `siteSearch` (the engine behind the wiki's own search box).
-  Tenants that reject it fall back to `text ~`.
-- **Fetch:** v2 `pages/{id}` for full bodies and labels. Bodies are cached per
-  page version.
+- **Search:** up to six small CQL queries, run in parallel. Each is anchored on
+  the product or task in a title, as a prefix match: `title ~ "zerto*" AND
+  text ~ "upgrade*"`. It does not use `siteSearch` or one long phrase. On
+  expedient-cloud, `siteSearch` ignores its terms and returns the same pages
+  for any query, a long `text ~` phrase drifts off topic, and an exact
+  `title ~ "cohesity"` matches nothing.
+- **Pre-rank, then fetch:** the REST search returns hits in no useful order,
+  so the pooled hits are pre-ranked on title and excerpt. Only the best 8 are
+  fetched in full (v2 `pages/{id}`, cached per page version).
 - **Rank:** pages go through the same scorer and confidence gate as the demo's
-  mock techdocs, so "high confidence" means the same thing for both.
+  mock techdocs, so "high confidence" means the same thing for both. Titles
+  weigh in:
+  - `SOP`/`MOP`/`KB`/`TSG`/`PIG` pages rank up.
+  - Deprecated, WIP, and archived pages rank well down.
+  - A title naming the ticket's own product and task ranks up.
+  - A page over two years old is flagged to the analyst and to the model.
 - **Safety:** GET only. Credential-looking strings are redacted before a page
   reaches the model. Page text is fenced as data and marked internal-only in
   the prompt.
