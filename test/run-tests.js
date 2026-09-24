@@ -1315,6 +1315,33 @@ async function main() {
         assert.match(res.body.smcNotice || '', /Drafted from the page, not SMC: .*expire/);
       }));
     });
+
+    await test('HTTP: an id-only page scrape is refused with the SMC reason, not drafted as an empty ticket', async () => {
+      // What the live console produced on #3767603: the adapter found the id,
+      // every content selector missed, and the SMC token had expired.
+      const idOnly = { ticketId: '9990002', provider: 'mock', ticket: { id: '9990002', notes: [] } };
+
+      const expired = async () => ({ ...fakeResponse(401, {}), headers: { get: () => 'application/json' } });
+      await withEnv({ SMC_API_BASE_URL: 'https://smc.test/v3', SMC_API_USER: '', ONEPANE_CREDENTIALS: 'per-user' }, () => withFetch(expired, async () => {
+        const res = await call('POST', '/api/generate', { 'X-OnePane-SMC-Token': 'stale-token' }, idOnly);
+        assert.strictEqual(res.status, 400, JSON.stringify(res.body));
+        assert.match(res.body.error, /Could not read ticket 9990002: SMC lookup failed \(.*expire.*\), and nothing usable could be read off the page/);
+      }));
+
+      await withEnv({ SMC_API_BASE_URL: 'https://smc.test/v3', SMC_API_USER: '', ONEPANE_CREDENTIALS: 'per-user' }, async () => {
+        const res = await call('POST', '/api/ask', {}, { ...idOnly, question: 'What happened?' });
+        assert.strictEqual(res.status, 400, JSON.stringify(res.body));
+        assert.match(res.body.error, /Could not read ticket 9990002: SMC is not configured \(.+\), and nothing usable could be read off the page/);
+      });
+
+      // A scrape with a note body is still usable without SMC.
+      await withEnv({ SMC_API_BASE_URL: '', ONEPANE_CREDENTIALS: 'per-user' }, async () => {
+        const res = await call('POST', '/api/generate', {}, {
+          ...idOnly, ticket: { id: '9990002', notes: [{ author: 'Client', role: 'client', body: 'VPN is down' }] },
+        });
+        assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+      });
+    });
   } finally {
     server.close();
   }

@@ -96,7 +96,7 @@ matching Confluence SOPs, until it is pointed at Cole's `/api/query`. The v3 spe
 `onepane-mock/smc-console/` is a stand-in for the SMC ticket view, mounted at
 `/mock-smc/`. It is the host page the overlay is tested against, and the
 extension's localhost match is narrowed to that path so the overlay never
-injects into the Control Center. `test/run-tests.js` is 102 dependency-free
+injects into the Control Center. `test/run-tests.js` is 103 dependency-free
 tests. It installs the mock pack for fixtures, and its "production mode" group
 uninstalls it.
 
@@ -114,6 +114,11 @@ uninstalls it.
 - **Every SMC field selector is a guess.** The extension's ticket-id detection
   and reply-box fallback are exercised against the mock console, but subject,
   client, severity, and note classification have never seen the real DOM.
+  On the live console (#3767603) the page scrape found only the id. So when
+  the SMC fetch fails (the v3 token expires after about 4 hours), the fallback
+  has nothing to draft from. `inlineTicket()` therefore refuses an id-only
+  scrape, and the 400 names the SMC reason. The next fix is real selectors,
+  taken from e.g. `https://app.expedient.com/ticket/3767603/note/index`.
 - **Auth is a stub.** `resolveAuthContext()` in
   `extension/src/shared/contracts.js` returns an unprivileged dev identity with
   empty `authorizedClients`, so it fails closed rather than reading every

@@ -108,13 +108,19 @@ function serveStatic(res, rootDir, relPath) {
  * real signal and quietly skews the draft.
  *
  * Returns null when there is not enough to work with, so the caller can say so
- * plainly instead of generating from nothing.
+ * plainly instead of generating from nothing. An id alone is not enough: the
+ * adapter always finds the id (breadcrumb or URL) even when every content
+ * selector misses, and drafting from `{id}` produced "no problem description
+ * is available" replies on a ticket with a full thread (#3767603). It takes a
+ * subject or title, or at least one note with a body.
  */
 function inlineTicket(raw) {
   if (!raw || typeof raw !== 'object') return null;
-  if (!raw.id && !raw.subject) return null;
 
   const notes = Array.isArray(raw.notes) ? raw.notes : [];
+  const hasSubject = Boolean(String(raw.subject || raw.title || '').trim());
+  const hasNoteBody = notes.some((n) => n && String(n.body || '').trim());
+  if (!hasSubject && !hasNoteBody) return null;
 
   return {
     id: String(raw.id || ''),
@@ -169,6 +175,14 @@ async function resolveTicket(body) {
   let smcWarnings = [];
   let smcMeta = null;
   let smcError = null;
+  // Why SMC was not even tried, for the error when the page scrape is empty too.
+  let smcSkipped = null;
+
+  if (!ticket && body.ticketId && !smcConfigured()) {
+    smcSkipped = describeSmcConfig().baseUrl
+      ? credentials.missingMessage('smcToken')
+      : 'SMC_API_BASE_URL is not set on this server';
+  }
 
   if (!ticket && body.ticketId && smcConfigured()) {
     try {
@@ -198,7 +212,7 @@ async function resolveTicket(body) {
   }
 
   return {
-    ticket, origin, smcWarnings, smcMeta, smcError, smcNotice,
+    ticket, origin, smcWarnings, smcMeta, smcError, smcNotice, smcSkipped,
   };
 }
 
@@ -225,11 +239,17 @@ function noteResult(entry, ticket, origin, result) {
   }
 }
 
-function unknownTicketError(body, smcError) {
-  return smcError
-    ? `SMC lookup failed for ticket ${body.ticketId} (${smcError}) and no usable ticket supplied.`
-    : `Unknown ticketId ${body.ticketId} and no usable ticket supplied. `
-      + 'Send a `ticket` object with at least an id and a notes array.';
+/**
+ * Why no ticket could be resolved, naming the SMC reason first: on a live
+ * console the page scrape is only a fallback, so the SMC failure is the thing
+ * to fix (usually an expired v3 token).
+ */
+function unknownTicketError(body, smcError, smcSkipped) {
+  const pageNote = 'and nothing usable could be read off the page.';
+  if (smcError) return `Could not read ticket ${body.ticketId}: SMC lookup failed (${smcError}), ${pageNote}`;
+  if (smcSkipped) return `Could not read ticket ${body.ticketId}: SMC is not configured (${smcSkipped}), ${pageNote}`;
+  return `Unknown ticketId ${body.ticketId} and no usable ticket supplied. `
+    + 'Send a `ticket` object with a subject or at least one note with a body.';
 }
 
 const NO_CORPUS = 'No local ticket corpus in production. Tickets come from SMC '
@@ -311,11 +331,11 @@ async function handleApi(req, res, url, entry) {
   if (req.method === 'POST' && pathname === '/api/generate') {
     const body = await readBody(req);
     const {
-      ticket, origin, smcWarnings, smcMeta, smcError, smcNotice,
+      ticket, origin, smcWarnings, smcMeta, smcError, smcNotice, smcSkipped,
     } = await resolveTicket(body);
 
     if (!ticket) {
-      return sendJson(res, 400, { error: unknownTicketError(body, smcError) });
+      return sendJson(res, 400, { error: unknownTicketError(body, smcError, smcSkipped) });
     }
 
     try {
@@ -347,11 +367,11 @@ async function handleApi(req, res, url, entry) {
   if (req.method === 'POST' && pathname === '/api/suggestions') {
     const body = await readBody(req);
     const {
-      ticket, origin, smcWarnings, smcMeta, smcError, smcNotice,
+      ticket, origin, smcWarnings, smcMeta, smcError, smcNotice, smcSkipped,
     } = await resolveTicket(body);
 
     if (!ticket) {
-      return sendJson(res, 400, { error: unknownTicketError(body, smcError) });
+      return sendJson(res, 400, { error: unknownTicketError(body, smcError, smcSkipped) });
     }
 
     try {
@@ -380,11 +400,11 @@ async function handleApi(req, res, url, entry) {
   if (req.method === 'POST' && pathname === '/api/ask') {
     const body = await readBody(req);
     const {
-      ticket, origin, smcWarnings, smcMeta, smcError, smcNotice,
+      ticket, origin, smcWarnings, smcMeta, smcError, smcNotice, smcSkipped,
     } = await resolveTicket(body);
 
     if (!ticket) {
-      return sendJson(res, 400, { error: unknownTicketError(body, smcError) });
+      return sendJson(res, 400, { error: unknownTicketError(body, smcError, smcSkipped) });
     }
 
     try {
