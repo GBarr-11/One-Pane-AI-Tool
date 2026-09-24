@@ -9,6 +9,7 @@
 
 import {
   DEFAULT_OVERLAY, loadConfig, saveConfig, loadOverlayState, saveOverlayState,
+  CREDENTIAL_HEADERS, loadCredentials, saveCredentials, credentialsAllowedFor,
 } from '../shared/config.js';
 import { MSG, sendToBackground } from '../shared/messages.js';
 
@@ -28,14 +29,30 @@ async function restore() {
   $('autoOpen').checked = config.autoOpen;
   $('askEnabled').checked = config.askEnabled;
   $('autoDraft').checked = config.autoDraft;
+
+  const creds = await loadCredentials();
+  for (const name of Object.keys(CREDENTIAL_HEADERS)) $(name).value = creds[name];
+}
+
+function credentialFields() {
+  return Object.fromEntries(Object.keys(CREDENTIAL_HEADERS).map((name) => [name, $(name).value]));
 }
 
 async function save() {
+  const onePane = $('onePane').value.trim().replace(/\/+$/, '');
+  const creds = credentialFields();
+  // Refuse up front rather than save a setup the worker will then refuse to use.
+  if (Object.values(creds).some((v) => v.trim()) && !credentialsAllowedFor(onePane)) {
+    flash('Not saved — credentials need an https:// backend (http only for localhost)');
+    return;
+  }
+  await saveCredentials(creds);
+
   await saveConfig({
     backends: {
       // Trailing slashes turn every request path into a double slash, which
       // some routers 404 on. Cheaper to strip here than to debug later.
-      onePane: $('onePane').value.trim().replace(/\/+$/, ''),
+      onePane,
       aiCtrl: $('aiCtrl').value.trim().replace(/\/+$/, ''),
     },
     side: $('side').value,
@@ -82,7 +99,59 @@ async function checkHealth() {
   }
 }
 
+/**
+ * Save, then ask the backend to try each credential. Saving first means the
+ * test exercises exactly what the panel will send.
+ */
+async function testCredentials() {
+  const out = $('credResults');
+  out.innerHTML = '<div>Testing…</div>';
+  await save();
+
+  const line = (label, r) => {
+    const div = document.createElement('div');
+    if (!r || r.ok === null || r.ok === undefined) {
+      div.className = 'unset';
+      div.textContent = `${label} — not set${r && r.error ? ` (${r.error})` : ''}`;
+    } else {
+      div.className = r.ok ? 'ok' : 'err';
+      const from = { request: 'your key', server: "the server's .env key", shared: 'the shared service account' }[r.source] || '';
+      div.textContent = r.ok
+        ? `${label} — accepted${from ? ` (${from})` : ''}${r.authenticatedAs ? ` as ${r.authenticatedAs}` : ''}`
+        : `${label} — ${r.error}`;
+    }
+    return div;
+  };
+
+  try {
+    const result = await sendToBackground(MSG.CHECK_CREDENTIALS);
+    out.replaceChildren(
+      line('Open WebUI', result.owui),
+      line('SMC', result.smc),
+      line('Confluence', result.confluence),
+    );
+    if (result.mode === 'server') {
+      const note = document.createElement('div');
+      note.className = 'unset';
+      note.textContent = 'This backend is in server mode: anything you leave blank falls back to its own .env keys.';
+      out.append(note);
+    }
+  } catch (err) {
+    out.replaceChildren(line('Credential check', { ok: false, error: err.message }));
+  }
+}
+
+async function clearCredentials(names) {
+  for (const name of names) $(name).value = '';
+  await saveCredentials(credentialFields());
+  $('credResults').replaceChildren();
+  flash('Removed');
+}
+
 $('save').onclick = save;
+$('testCreds').onclick = testCredentials;
+$('clearSmc').onclick = () => clearCredentials(['smcToken']);
+$('clearCreds').onclick = () => clearCredentials(Object.keys(CREDENTIAL_HEADERS));
 $('reset').onclick = resetPlacement;
 
 restore().then(checkHealth);

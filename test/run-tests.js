@@ -981,6 +981,205 @@ async function main() {
     assert.strictEqual(activity.callerOf(req({})), 'direct');
   });
 
+  console.log('\nper-user credentials');
+
+  const credentials = require('../server/credentials');
+  const openwebui = require('../server/providers/openwebui');
+  const smcClient = require('../server/smc/client');
+  const confluenceClient = require('../server/confluence/client');
+
+  /** Set (or with '' / undefined, clear) env vars for fn, then restore them. */
+  async function withEnv(vars, fn) {
+    const saved = {};
+    for (const [k, v] of Object.entries(vars)) {
+      saved[k] = process.env[k];
+      if (v === undefined || v === '') delete process.env[k]; else process.env[k] = v;
+    }
+    try { return await fn(); } finally {
+      for (const k of Object.keys(vars)) {
+        if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];
+      }
+    }
+  }
+
+  /** A fake fetch that records the Authorization header of every call. */
+  function recordingFetch(respond) {
+    const calls = [];
+    const fake = async (url, init = {}) => {
+      calls.push({ url: String(url), auth: (init.headers || {}).Authorization || null });
+      return respond(String(url));
+    };
+    return { fake, calls };
+  }
+
+  const owuiOk = () => fakeResponse(200, { choices: [{ message: { content: '<p>ok</p>' } }] });
+  const OPERATOR = { OWUI_URL: 'https://owui.test/api', OWUI_API_KEY: 'operator-owui-key' };
+
+  await test('per-user mode never spends the .env Open WebUI key', async () => {
+    const { fake, calls } = recordingFetch(owuiOk);
+    await withEnv({ ...OPERATOR, ONEPANE_CREDENTIALS: 'per-user' }, () => withFetch(fake, async () => {
+      await assert.rejects(
+        () => openwebui.polish({ text: 'hi' }),
+        /No Open WebUI API key - add yours in One Pane's settings/,
+      );
+    }));
+    assert.strictEqual(calls.length, 0, 'a request went upstream with no caller key');
+  });
+
+  await test("per-user mode sends the caller's key, never the operator's", async () => {
+    const { fake, calls } = recordingFetch(owuiOk);
+    await withEnv({ ...OPERATOR, ONEPANE_CREDENTIALS: 'per-user' }, () => withFetch(fake, () => (
+      credentials.run({ owuiKey: 'analyst-owui-key' }, () => openwebui.polish({ text: 'hi' }))
+    )));
+    assert.deepStrictEqual(calls.map((c) => c.auth), ['Bearer analyst-owui-key']);
+  });
+
+  await test("server mode uses .env, and a caller's own key wins over it", async () => {
+    const { fake, calls } = recordingFetch(owuiOk);
+    await withEnv({ ...OPERATOR, ONEPANE_CREDENTIALS: undefined }, () => withFetch(fake, async () => {
+      await openwebui.polish({ text: 'hi' });
+      await credentials.run({ owuiKey: 'analyst-owui-key' }, () => openwebui.polish({ text: 'hi' }));
+    }));
+    assert.deepStrictEqual(calls.map((c) => c.auth), ['Bearer operator-owui-key', 'Bearer analyst-owui-key']);
+  });
+
+  await test('an unrecognized ONEPANE_CREDENTIALS fails loudly instead of meaning "server"', async () => {
+    await withEnv({ ONEPANE_CREDENTIALS: 'peruser' }, () => {
+      assert.throws(() => credentials.mode(), /not a mode/);
+      assert.throws(() => credentials.get('owuiKey'), /not a mode/);
+    });
+  });
+
+  await test("per-user SMC ignores SMC_API_PASS and sends the caller's token", async () => {
+    const { fake, calls } = recordingFetch(() => ({
+      ...fakeResponse(200, { id: 1 }), headers: { get: () => 'application/json' },
+    }));
+    await withEnv({
+      SMC_API_BASE_URL: 'https://smc.test/v3', SMC_API_USER: '', SMC_API_PASS: 'operator-smc-token', ONEPANE_CREDENTIALS: 'per-user',
+    }, () => withFetch(fake, async () => {
+      assert.strictEqual(smcClient.isConfigured(), false, 'operator token counted as configured');
+      await assert.rejects(() => smcClient.smcGet('tickets/1'), /No SMC API token/);
+      await credentials.run({ smcToken: 'analyst-smc-token' }, () => smcClient.smcGet('tickets/1'));
+    }));
+    assert.deepStrictEqual(calls.map((c) => c.auth), ['Bearer analyst-smc-token']);
+  });
+
+  await test('an SMC 401 says the token probably expired, and carries the status', async () => {
+    const fake = async () => ({ ...fakeResponse(401, {}), headers: { get: () => 'application/json' } });
+    await withEnv({ SMC_API_BASE_URL: 'https://smc.test/v3', SMC_API_USER: '', ONEPANE_CREDENTIALS: 'per-user' }, () => withFetch(fake, () => (
+      credentials.run({ smcToken: 'stale-token' }, async () => {
+        const err = await smcClient.smcGet('tickets/1').then(() => null, (e) => e);
+        assert.ok(err, 'a 401 resolved');
+        assert.strictEqual(err.status, 401);
+        assert.match(err.message, /rejected your SMC API token.*expire after about 4 hours/);
+        assert.ok(!err.message.includes('stale-token'), 'token leaked into the error');
+      })
+    )));
+  });
+
+  await test('Confluence: the shared account is opt-in, and never paired with half a caller credential', async () => {
+    const env = {
+      CONFLUENCE_SITE_URL: 'https://wiki.test', CONFLUENCE_EMAIL: 'svc@example.test', CONFLUENCE_API_TOKEN: 'svc-token', ONEPANE_CREDENTIALS: 'per-user',
+    };
+    await withEnv({ ...env, CONFLUENCE_SHARED_ACCOUNT: undefined }, () => {
+      assert.strictEqual(confluenceClient.isConfigured(), false, 'service account used without opting in');
+    });
+    await withEnv({ ...env, CONFLUENCE_SHARED_ACCOUNT: 'true' }, async () => {
+      assert.strictEqual(confluenceClient.config().token, 'svc-token');
+      assert.strictEqual(credentials.source('confluenceToken'), 'shared');
+      await credentials.run({ confluenceEmail: 'me@example.test' }, () => {
+        assert.strictEqual(confluenceClient.config().token, '', 'caller email paired with the service token');
+        assert.strictEqual(confluenceClient.isConfigured(), false);
+      });
+      await credentials.run({ confluenceEmail: 'me@example.test', confluenceToken: 'my-token' }, () => {
+        assert.deepStrictEqual([confluenceClient.config().email, confluenceClient.config().token], ['me@example.test', 'my-token']);
+      });
+    });
+  });
+
+  await test('malformed credential headers are refused, and only loopback or HTTPS is trusted', () => {
+    assert.deepStrictEqual(credentials.fromHeaders({ 'x-onepane-owui-key': ' k1 ' }), { credentials: { owuiKey: 'k1' }, error: null });
+    assert.match(credentials.fromHeaders({ 'x-onepane-smc-token': 'has space' }).error, /malformed/);
+    assert.match(credentials.fromHeaders({ 'x-onepane-smc-token': 'x'.repeat(9000) }).error, /malformed/);
+    const req = (remoteAddress, headers = {}) => ({ socket: { remoteAddress }, headers });
+    assert.strictEqual(credentials.secureTransport(req('127.0.0.1')), true);
+    assert.strictEqual(credentials.secureTransport(req('::ffff:127.0.0.1')), true);
+    assert.strictEqual(credentials.secureTransport(req('10.0.0.5')), false);
+    assert.strictEqual(credentials.secureTransport(req('10.0.0.5', { 'x-forwarded-proto': 'https' })), true);
+    assert.strictEqual(credentials.secureTransport(req('10.0.0.5', { 'x-forwarded-proto': 'http' })), false);
+  });
+
+  await test("status never carries a caller's key and marks .env secrets ignored in per-user mode", async () => {
+    const { buildStatus } = require('../server/status');
+    await withEnv({ ...OPERATOR, ONEPANE_CREDENTIALS: 'per-user', ONEPANE_PROVIDER: 'openwebui' }, () => (
+      credentials.run({ owuiKey: 'analyst-secret-key-123' }, () => {
+        const body = JSON.stringify(buildStatus());
+        assert.ok(!body.includes('analyst-secret-key-123'), 'caller key reached status');
+        const s = JSON.parse(body);
+        assert.strictEqual(s.credentials.mode, 'per-user');
+        assert.strictEqual(s.env.find((v) => v.name === 'OWUI_API_KEY').ignored, true);
+        assert.strictEqual(s.provider.openwebui.configured, true, 'per-user openwebui should read as ready server-side');
+      })
+    ));
+  });
+
+  // End to end through the real HTTP handler: proves the headers actually reach
+  // the upstream calls, not just that credentials.js works in isolation.
+  process.env.ONEPANE_ENV_FILE = require('path').join(__dirname, 'no-such.env');
+  const { server } = require('../server/server');
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+
+  /** Talks to the test server with http, so faking global fetch never intercepts it. */
+  function call(method, pathname, headers = {}, body = null) {
+    return new Promise((resolve, reject) => {
+      const payload = body ? JSON.stringify(body) : null;
+      const req = require('http').request({
+        host: '127.0.0.1', port, method, path: pathname,
+        headers: { ...headers, ...(payload ? { 'Content-Type': 'application/json' } : {}) },
+      }, (res) => {
+        let text = '';
+        res.on('data', (c) => { text += c; });
+        res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(text) }));
+      });
+      req.on('error', reject);
+      if (payload) req.write(payload);
+      req.end();
+    });
+  }
+
+  try {
+    await test('HTTP: a key sent as a header is the one the gateway sees', async () => {
+      const { fake, calls } = recordingFetch((url) => (url.endsWith('/models')
+        ? fakeResponse(200, { data: [{ id: 'gpt-5.6-luna' }] }) : fakeResponse(404, {})));
+      await withEnv({ ...OPERATOR, ONEPANE_CREDENTIALS: 'per-user', SMC_API_BASE_URL: undefined }, () => withFetch(fake, async () => {
+        const mine = await call('GET', '/api/credentials/check', { 'X-OnePane-OWUI-Key': 'analyst-owui-key' });
+        assert.strictEqual(mine.body.owui.ok, true, JSON.stringify(mine.body.owui));
+        assert.strictEqual(mine.body.owui.source, 'request');
+
+        const none = await call('GET', '/api/credentials/check');
+        assert.strictEqual(none.body.owui.ok, false);
+        assert.match(none.body.owui.error, /add yours in One Pane's settings/);
+      }));
+      assert.deepStrictEqual(calls.map((c) => c.auth), ['Bearer analyst-owui-key'], 'operator key reached the gateway');
+    });
+
+    await test('HTTP: an expired SMC token is reported on the draft, not swallowed by the page fallback', async () => {
+      const fake = async () => ({ ...fakeResponse(401, {}), headers: { get: () => 'application/json' } });
+      await withEnv({ SMC_API_BASE_URL: 'https://smc.test/v3', SMC_API_USER: '', ONEPANE_CREDENTIALS: 'per-user' }, () => withFetch(fake, async () => {
+        const res = await call('POST', '/api/generate', { 'X-OnePane-SMC-Token': 'stale-token' }, {
+          ticketId: '9990001',
+          provider: 'mock',
+          ticket: { id: '9990001', subject: 'VPN down', notes: [{ author: 'Client', role: 'client', body: 'VPN is down' }] },
+        });
+        assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+        assert.match(res.body.smcNotice || '', /Drafted from the page, not SMC: .*expire/);
+      }));
+    });
+  } finally {
+    server.close();
+  }
+
   console.log(`\n${passed} passed, ${failures.length} failed\n`);
   if (failures.length) process.exit(1);
 }

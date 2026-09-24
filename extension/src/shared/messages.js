@@ -14,6 +14,8 @@ export const MSG = {
   POLISH_TEXT: 'polish-text',
   GET_SUGGESTIONS: 'get-suggestions',
   HEALTH: 'health',
+  /** Options page -> worker: test the stored credentials against the backend. */
+  CHECK_CREDENTIALS: 'check-credentials',
   /** Background -> content script: the toolbar icon was clicked. */
   TOGGLE_PANEL: 'toggle-panel',
 };

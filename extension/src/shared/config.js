@@ -122,6 +122,74 @@ export async function saveConfig(patch) {
   return next;
 }
 
+/**
+ * The analyst's own upstream credentials, sent to the One Pane backend with
+ * every request so it spends their keys rather than its operator's (see
+ * server/credentials.js).
+ *
+ * `storage.local` only, never `sync`: a key should stay on the machine it was
+ * pasted into, not follow a browser profile onto every device it signs into.
+ * Read only by the service worker and the options page - never by a content
+ * script, which runs inside SMC's page.
+ *
+ * @typedef {object} Credentials
+ * @property {string} owuiKey          Open WebUI API key
+ * @property {string} smcToken         SMC v3 token (expires after ~4 hours)
+ * @property {string} confluenceEmail  Atlassian account email
+ * @property {string} confluenceToken  Atlassian API token
+ * @property {string} anthropicKey     only if the server runs the claude provider
+ */
+const CREDENTIALS_KEY = 'onePane.credentials';
+
+/**
+ * Header each credential travels in. Must match CREDENTIALS in
+ * server/credentials.js.
+ */
+export const CREDENTIAL_HEADERS = {
+  owuiKey: 'X-OnePane-OWUI-Key',
+  smcToken: 'X-OnePane-SMC-Token',
+  confluenceEmail: 'X-OnePane-Confluence-Email',
+  confluenceToken: 'X-OnePane-Confluence-Token',
+  anthropicKey: 'X-OnePane-Anthropic-Key',
+};
+
+/** @returns {Promise<Credentials>} */
+export async function loadCredentials() {
+  const stored = await chrome.storage.local.get(CREDENTIALS_KEY);
+  const saved = stored[CREDENTIALS_KEY] || {};
+  return Object.fromEntries(Object.keys(CREDENTIAL_HEADERS).map((k) => [k, String(saved[k] || '')]));
+}
+
+/**
+ * Replace the stored credentials. Blank fields are dropped rather than stored
+ * as empty strings, so "cleared" and "never set" look the same.
+ *
+ * @param {Partial<Credentials>} next
+ */
+export async function saveCredentials(next) {
+  const clean = {};
+  for (const k of Object.keys(CREDENTIAL_HEADERS)) {
+    const value = String(next[k] || '').trim();
+    if (value) clean[k] = value;
+  }
+  await chrome.storage.local.set({ [CREDENTIALS_KEY]: clean });
+}
+
+/**
+ * True when credentials may be sent to this backend: HTTPS, or plain HTTP to
+ * this machine's own loopback (a server started with `npm start` on the laptop,
+ * or a `coder port-forward` tunnel). Anything else would put the keys on the
+ * wire in cleartext.
+ *
+ * @param {string} backendUrl
+ */
+export function credentialsAllowedFor(backendUrl) {
+  let url;
+  try { url = new URL(backendUrl); } catch { return false; }
+  if (url.protocol === 'https:') return true;
+  return url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+}
+
 /** @returns {Promise<OverlayState>} */
 export async function loadOverlayState() {
   const stored = await chrome.storage.local.get(OVERLAY_KEY);

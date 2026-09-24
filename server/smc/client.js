@@ -17,6 +17,8 @@
  * called from this codebase.
  */
 
+const credentials = require('../credentials');
+
 /** Fail rather than hang a panel on an unreachable or slow console. */
 const REQUEST_TIMEOUT_MS = 20_000;
 
@@ -25,18 +27,27 @@ const METHOD = 'GET';
 
 const trimSlashes = (value) => String(value || '').replace(/\/+$/, '');
 
+/** An Error carrying the upstream HTTP status, so callers can tell 401 from 404. */
+function httpError(message, status) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
+
 /**
  * Read configuration at call time, not at module load.
  *
  * Load-time capture would freeze whatever the environment looked like when the
  * first require happened, which makes the diagnostics endpoint unable to report
- * a fix the operator just made.
+ * a fix the operator just made. It also has to be per call because the token
+ * is per caller: it comes from credentials.js, which hands back the token sent
+ * with this request (or, in server mode only, SMC_API_PASS from .env).
  */
 function config() {
   return {
     baseUrl: trimSlashes(process.env.SMC_API_BASE_URL),
     user: String(process.env.SMC_API_USER || '').trim(),
-    pass: String(process.env.SMC_API_PASS || '').trim(),
+    pass: credentials.get('smcToken'),
   };
 }
 
@@ -139,7 +150,7 @@ function resolveUrl(pathname, query) {
  */
 async function smcGet(pathname, options = {}) {
   const auth = authHeader();
-  if (!auth) throw new Error('SMC_API_PASS is not set - see .env.example');
+  if (!auth) throw new Error(credentials.missingMessage('smcToken'));
 
   const url = resolveUrl(pathname, options.query);
   const controller = new AbortController();
@@ -187,11 +198,17 @@ async function smcGet(pathname, options = {}) {
     }
   }
 
+  // v3 tokens are per-person and last about four hours, so an expired token is
+  // the likeliest 401 by far - say that first, in words an analyst can act on.
+  if (res.status === 401) {
+    throw httpError(`SMC 401: ${credentials.rejectedMessage('smcToken', 'SMC')} `
+      + 'v3 tokens expire after about 4 hours, so it has probably expired - paste a new one.', 401);
+  }
   if (!res.ok) {
-    const hint = res.status === 401 || res.status === 403
-      ? ' - check SMC_API_USER / SMC_API_PASS and whether the key is read-scoped for this endpoint'
+    const hint = res.status === 403
+      ? ' - the token was accepted but is not allowed this endpoint (it may not be read-scoped for it)'
       : '';
-    throw new Error(`SMC ${res.status} on ${METHOD} ${url.pathname}${hint}: ${redact(body).slice(0, 300)}`);
+    throw httpError(`SMC ${res.status} on ${METHOD} ${url.pathname}${hint}: ${redact(body).slice(0, 300)}`, res.status);
   }
 
   return {

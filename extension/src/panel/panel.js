@@ -270,6 +270,11 @@ export function createPanelContent({
           <strong>Heads up</strong>${esc(r.caveat.message)}
         </div>` : ''}
 
+      ${r.smcNotice ? `
+        <div class="heads-up">
+          <strong>SMC not used</strong>${esc(r.smcNotice)}
+        </div>` : ''}
+
       ${steeringControls('Apply changes', 'revise')}
 
       <div class="label">Sources used</div>

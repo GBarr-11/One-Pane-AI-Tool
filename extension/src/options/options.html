@@ -23,7 +23,7 @@
   }
   .sub { color: var(--steel); margin-bottom: 10px; }
   label.field { display: block; font-weight: 600; margin: 18px 0 5px; font-size: 13px; }
-  input[type="url"], select {
+  input[type="url"], input[type="password"], input[type="email"], select {
     width: 100%; padding: 9px 11px; font-size: 13px; font-family: inherit;
     border: 1px solid var(--smoke); border-radius: 6px; background: #fff; color: var(--ink);
   }
@@ -51,6 +51,14 @@
   .health .ok::before { background: var(--green); } .health .err::before { background: var(--red); }
   .ok { color: var(--ink); } .err { color: #B80404; }
   code { background: var(--cloud); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+  .group { font-size: 12px; font-weight: 700; margin: 26px 0 0; }
+  .group small { font-weight: 400; color: var(--steel); }
+  .row .ghost { flex: none; padding: 9px 14px; font-size: 13px; }
+  .creds { margin-top: 14px; font-size: 12.5px; }
+  .creds div { margin-top: 6px; }
+  .creds div::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 8px; background: var(--smoke); vertical-align: 1px; }
+  .creds .ok::before { background: var(--green); } .creds .err::before { background: var(--red); }
+  .creds .unset { color: var(--steel); }
 </style>
 </head>
 <body>
@@ -79,6 +87,43 @@
   <div id="healthOnePane">One Pane — checking…</div>
   <div id="healthAiCtrl">AI CTRL — checking…</div>
 </div>
+
+<h2>Your credentials</h2>
+<div class="note">
+  One Pane calls Open WebUI, SMC, and Confluence <b>as you</b>, with your own keys. They are stored
+  only in this browser on this machine, and sent only to the One Pane backend above
+  (over HTTPS, or to localhost), which uses them for that one request and keeps nothing.
+</div>
+
+<div class="group">Open WebUI <small>— required for drafting</small></div>
+<label class="field" for="owuiKey">API key</label>
+<input type="password" id="owuiKey" autocomplete="off" spellcheck="false" placeholder="sk-…">
+<div class="note">In Open WebUI: your profile → Settings → Account → API keys.</div>
+
+<div class="group">SMC <small>— optional; without it, tickets are read from the page</small></div>
+<label class="field" for="smcToken">API token</label>
+<div class="row">
+  <div><input type="password" id="smcToken" autocomplete="off" spellcheck="false"></div>
+  <button class="ghost" id="clearSmc" type="button">Clear</button>
+</div>
+<div class="note">v3 tokens expire after about 4 hours. When drafts start saying SMC rejected your token, paste a fresh one here.</div>
+
+<div class="group">Confluence <small>— optional; grounds drafts in SOPs</small></div>
+<label class="field" for="confluenceEmail">Atlassian email</label>
+<input type="email" id="confluenceEmail" autocomplete="off" spellcheck="false" placeholder="you@expedient.com">
+<label class="field" for="confluenceToken">API token</label>
+<input type="password" id="confluenceToken" autocomplete="off" spellcheck="false">
+<div class="note">Create one at id.atlassian.com → Security → API tokens. Leave blank if the server provides a shared account.</div>
+
+<div class="group">Anthropic <small>— only if your One Pane server uses the claude provider</small></div>
+<label class="field" for="anthropicKey">API key</label>
+<input type="password" id="anthropicKey" autocomplete="off" spellcheck="false" placeholder="sk-ant-…">
+
+<div class="actions">
+  <button class="ghost" id="testCreds" type="button">Test credentials</button>
+  <button class="ghost" id="clearCreds" type="button">Remove all</button>
+</div>
+<div class="creds" id="credResults"></div>
 
 <h2>Panel</h2>
 
