@@ -3,8 +3,8 @@
 Manifest V3 extension that floats One Pane's draft pipeline and Cole's AI CTRL
 assistant over the SMC ticket page, without changing a pixel of it.
 
-Scaffold — it runs today against the local mock, and every SMC-only selector in
-it is an unverified placeholder.
+Scaffold. It runs today against the mock SMC console in `onepane-mock/`, and
+every SMC-only selector in it is an unverified placeholder.
 
 ---
 
@@ -28,7 +28,7 @@ and the notes list are identical, and no horizontal scrollbar appears.
 | Surface | Backend | What it does |
 |---|---|---|
 | **Draft reply** | One Pane (`/api/generate`) | Reads the ticket, retrieves techdocs + precedent, writes a grounded draft **into the reply box** |
-| **Ask AI CTRL** | AI CTRL (`/api/query`) | Answers read-only questions about tickets, alerts, and platform state |
+| **Ask AI CTRL** | One Pane (`/api/ask`) for now; AI CTRL (`/api/query`) once integrated | Answers read-only questions about the open ticket, from its thread and metadata only |
 
 ### Steering a draft
 
@@ -36,12 +36,18 @@ Tone presets (More formal / Friendlier / Shorter / More detailed) and a free-tex
 box sit under both the first draft and every revision. **Apply changes** revises
 the draft the analyst is looking at rather than generating a new one — someone
 who asked for "shorter" wants their draft shortened, not a different reply of
-the same length. **Start over** goes back to the ticket.
+the same length. **Start over** is the actual reset: it clears the
+tone/instruction steering and goes back to the blank form, so a leftover
+"shorter" toggle doesn't quietly carry into the next draft. There's no separate
+"regenerate" button — that's just Generate again, since Start over has already
+put the form back to a clean state.
 
-Both replace what One Pane last put in the reply box instead of stacking another
-copy under it. Text the analyst typed themselves is never touched: the extension
-tracks the exact nodes it inserted, so a half-written note above the draft
-survives every regenerate.
+A fresh draft replaces what One Pane last put in the reply box instead of
+stacking another copy under it. Text the analyst typed themselves is never
+touched: the extension tracks the exact nodes it inserted, so a half-written
+note above the draft survives every regenerate. Start over clears that tracking
+too, since the panel no longer considers the draft still on the page "its own"
+to replace.
 
 The offline generator can apply the tone presets but has no model behind it, so
 it reports free-text instructions as **not applied** rather than returning an
@@ -67,7 +73,7 @@ the panel, and lets both surfaces share one identity once WorkOS is wired up.
 ## Architecture
 
 ```
-ticket page (SMC or the local mock)
+ticket page (SMC or the mock console)
    │
    ├── loader.js ──────► content-script.js       orchestration only
    │                        │
@@ -118,10 +124,10 @@ auto-send path would break that assumption. His service's write-capable endpoint
 
 ## Running it
 
-Load unpacked against the local mock — no SMC access needed:
+Load unpacked against the mock console, with no SMC access needed:
 
 ```bash
-npm start
+npm run mock          # or npm run mock:offline for no network at all
 ```
 
 **Chrome:** `chrome://extensions` → enable **Developer mode** → **Load unpacked**
@@ -135,14 +141,23 @@ difference handled in code: `storage.sync` requires a signed-in profile, so
 preferences fall back to local storage when it is unavailable rather than
 silently reverting to defaults on every load.
 
-Then open http://localhost:3000.
+Then open http://localhost:3000/mock-smc/.
+
+The overlay injects only on `app.expedient.com` and on `localhost:3000/mock-smc/*`.
+It never lands on the Control Center at `localhost:3000/`, even though the same
+server hosts both. Extension calls show up in the Control Center's Activity tab
+as caller `extension`.
 
 - **Open it** — click the *One Pane* tab at the top right, or the toolbar icon.
 - **Close it** — the ▲ button in the panel header, the toolbar icon, or `Esc`.
 - **Move it** — drag the header. **Resize it** — drag the bottom-right corner.
   Both persist per machine.
+- **Light / dark** — the sun / screen / moon switch in the header picks Light,
+  Match system (follows the OS, live), or Dark. The choice syncs with the
+  analyst's browser profile, like the other preferences.
 - **Settings** — right-click the toolbar icon → Options: backend URLs, which
-  side it hangs from, auto-open, auto-draft, and a reset for size and position.
+  side it hangs from, appearance, auto-open, auto-draft, and a reset for size
+  and position.
 
 For the Ask tab, run Cole's backend alongside it (`apps/mastra`, port 8080, mock
 mode is fine). Without it, that tab reports the backend as unreachable — which is

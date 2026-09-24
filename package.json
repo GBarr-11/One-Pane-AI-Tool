@@ -2,10 +2,12 @@
   "name": "one-pane",
   "version": "0.1.0",
   "private": true,
-  "description": "One Pane - AI-assisted reply drafting for the SMC ticketing console (prototype)",
+  "description": "One Pane - AI-assisted reply drafting for the SMC ticketing console",
   "main": "server/server.js",
   "scripts": {
     "start": "node server/server.js",
+    "mock": "node onepane-mock/start.js",
+    "mock:offline": "node onepane-mock/start.js --offline",
     "test": "node test/run-tests.js"
   },
   "optionalDependencies": {

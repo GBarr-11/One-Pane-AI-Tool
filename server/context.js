@@ -19,6 +19,23 @@ function lastClientMessage(ticket) {
   return clientNotes.length ? clientNotes[clientNotes.length - 1] : null;
 }
 
+/**
+ * Who to open the reply to.
+ *
+ * `ticket.clientContact` is SMC's notion of the primary contact (its own
+ * default/order ranking) - it is not evidence that person has said anything
+ * on this ticket. Addressing them by name anyway is a guess dressed up as
+ * knowledge, so it is used only as a last resort. The client who has actually
+ * posted here, if any, is a real signal and takes priority; otherwise this
+ * falls back to the company name rather than naming an unconfirmed contact.
+ */
+function greetingName(ticket, lastClient) {
+  if (lastClient && lastClient.author && lastClient.author.trim() && lastClient.author !== 'Unknown') {
+    return lastClient.author.trim().split(/\s+/)[0];
+  }
+  return ticket.client ? `${ticket.client} team` : 'there';
+}
+
 /** The most recent note of any kind that a human wrote. */
 function lastHumanNote(ticket) {
   const human = ticket.notes.filter((n) => n.role === 'client' || n.role === 'analyst');
@@ -80,7 +97,7 @@ function buildContext(ticket, opts = {}) {
     subject: ticket.subject,
     client: ticket.client,
     contact: ticket.clientContact,
-    contactFirstName: (ticket.clientContact || '').split(' ')[0] || 'there',
+    greetingName: greetingName(ticket, lastClient),
     status: ticket.status,
     severity: ticket.severity,
     category: ticket.category,

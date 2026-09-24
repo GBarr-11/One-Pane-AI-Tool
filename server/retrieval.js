@@ -1,10 +1,11 @@
 'use strict';
 
-const { KNOWLEDGE_BASE } = require('../data/knowledge-base');
-const { eligiblePrecedent } = require('../data/resolved-tickets');
-
 /**
- * Lexical retrieval over the techdocs and the resolved-ticket corpus.
+ * Lexical retrieval over techdocs and resolved tickets.
+ *
+ * Every function here takes its corpus as an argument. Production passes
+ * Confluence pages (see knowledge.js); the mock app passes its fixture corpus.
+ * Nothing in this file knows where documents come from.
  *
  * Deliberately not embeddings: this is a prototype and TF-IDF style scoring is
  * inspectable, has no external dependency, and is good enough to prove the
@@ -101,18 +102,37 @@ function recencyMultiplier(dateStr, asOf) {
   return 0.55;
 }
 
-function retrieveDocs(ctx, { limit = 3, asOf = new Date().toISOString() } = {}) {
-  const corpus = KNOWLEDGE_BASE.map((d) => tokenize(`${d.title} ${d.body} ${d.tags.join(' ')}`));
+/**
+ * The terms that count as curated signal for a doc.
+ *
+ * For the mock corpus that is its tags. A Confluence page's labels play the
+ * same role, but most wiki pages carry few or none, so its title counts too -
+ * a title is still something an author chose, unlike the body prose the gate
+ * below exists to discount.
+ */
+function curatedTerms(doc) {
+  const tags = Array.isArray(doc.tags) ? doc.tags : [];
+  return doc.source === 'confluence' ? [...tags, doc.title] : tags;
+}
+
+/**
+ * Rank any list of techdoc-shaped docs against a ticket.
+ *
+ * @param {object[]} docs  `{id, title, category, updated, tags, body}`
+ */
+function rankDocs(docs, ctx, { limit = 3, asOf = new Date().toISOString() } = {}) {
+  const corpus = docs.map((d) => tokenize(`${d.title} ${d.body} ${curatedTerms(d).join(' ')}`));
   const idf = buildIdf(corpus);
   const q = tokenize(ctx.retrievalText);
 
-  const ranked = KNOWLEDGE_BASE.map((doc, i) => {
-    const categoryMatch = doc.category === ctx.category;
-    let score = scoreAgainst(q, corpus[i], idf, doc.tags);
+  const ranked = docs.map((doc, i) => {
+    const curated = curatedTerms(doc);
+    const categoryMatch = Boolean(doc.category) && doc.category === ctx.category;
+    let score = scoreAgainst(q, corpus[i], idf, curated);
     // Category match is a strong structural signal the text alone may miss.
     if (categoryMatch) score *= 1.4;
     score *= recencyMultiplier(doc.updated, asOf);
-    return { doc, score, tagHits: countTagHits(q, doc.tags), categoryMatch };
+    return { doc, score, tagHits: countTagHits(q, curated), categoryMatch };
   })
     /*
      * A doc with no tag hit and no category match is matching on ambient
@@ -130,10 +150,14 @@ function retrieveDocs(ctx, { limit = 3, asOf = new Date().toISOString() } = {}) 
   return dropWeakTail(ranked);
 }
 
-function retrievePrecedent(ctx, { limit = 2, asOf = new Date().toISOString() } = {}) {
-  // Outcome filtering happens here: reopened/escalated tickets never become precedent.
-  const pool = eligiblePrecedent();
-  const corpus = pool.map((t) => tokenize(`${t.subject} ${t.resolutionNote} ${t.tags.join(' ')}`));
+/**
+ * Rank resolved tickets as precedent for this one.
+ *
+ * @param {object[]} pool  already outcome-filtered: reopened or escalated
+ *   tickets must never reach this function as precedent
+ */
+function rankPrecedent(pool, ctx, { limit = 2, asOf = new Date().toISOString() } = {}) {
+  const corpus = pool.map((t) => tokenize(`${t.subject} ${t.resolutionNote} ${(t.tags || []).join(' ')}`));
   const idf = buildIdf(corpus);
   const q = tokenize(ctx.retrievalText);
 
@@ -157,12 +181,15 @@ function retrievePrecedent(ctx, { limit = 2, asOf = new Date().toISOString() } =
  * fluent the generated text sounds. A draft with nothing behind it must be
  * labeled as such rather than presented with the same authority as a grounded one.
  */
-function assessConfidence(ctx, docs, precedent) {
+function assessConfidence(ctx, docs, precedent, { precedentAvailable = true } = {}) {
   const topScore = docs.length ? docs[0].score : 0;
   const reasons = [];
 
   if (!docs.length) reasons.push('No techdoc matched this ticket');
-  if (!precedent.length) reasons.push('No similar resolved ticket found');
+  // Only a reason when there was a precedent corpus to search. Live tickets
+  // have none (see knowledge.js), and a reason they can never clear would
+  // otherwise cap every live draft below "high".
+  if (precedentAvailable && !precedent.length) reasons.push('No similar resolved ticket found');
   if (ctx.problem === 'Undetermined' || !ctx.problem) {
     reasons.push('Ticket has no confirmed problem classification');
   }
@@ -177,7 +204,7 @@ function assessConfidence(ctx, docs, precedent) {
    * behind they would have graded almost everything as high.
    */
   let level;
-  if (topScore >= 7 && docs.length >= 1 && precedent.length >= 1 && reasons.length === 0) {
+  if (topScore >= 7 && docs.length >= 1 && (precedent.length >= 1 || !precedentAvailable) && reasons.length === 0) {
     level = 'high';
   } else if (topScore >= 2 && docs.length >= 1) {
     level = 'medium';
@@ -198,10 +225,6 @@ function assessConfidence(ctx, docs, precedent) {
   };
 }
 
-function retrieveAll(ctx, opts = {}) {
-  const docs = retrieveDocs(ctx, opts);
-  const precedent = retrievePrecedent(ctx, opts);
-  return { docs, precedent, confidence: assessConfidence(ctx, docs, precedent) };
-}
-
-module.exports = { retrieveAll, retrieveDocs, retrievePrecedent, assessConfidence, tokenize };
+module.exports = {
+  rankDocs, rankPrecedent, assessConfidence, tokenize,
+};

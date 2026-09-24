@@ -22,7 +22,7 @@
 /* ------------------------------------------------------------------ *
  * Selectors
  *
- * The local mock (public/index.html) is built to mirror these, so the reply-box
+ * The mock console (onepane-mock/smc-console/index.html) is built to mirror these, so the reply-box
  * and ticket-change paths below are exercised for real against localhost even
  * though no one has SMC access yet.
  *
@@ -49,6 +49,11 @@ const SMC_SELECTORS = {
   noteAuthor: '.note-author',
   noteBody: '.note-body',
   noteTimestamp: 'time[datetime]',
+  // Confirmed against the live console 2026-09-21 (ticket 3808633's note
+  // form): a plain <textarea name="app_note[body]">, not a contenteditable.
+  // `name` rather than `#app_note_body` in case the id turns out to be
+  // per-tab (SMC has both an "Internal" and an "All"/public note form).
+  replyBox: 'textarea[name="app_note[body]"]',
 };
 
 /**
@@ -126,7 +131,7 @@ function readTicketId(doc, location = window.location) {
  * @returns {{el: HTMLElement, via: string} | null}
  */
 function findReplyBox(doc) {
-  const exact = doc.querySelector(SHARED_SELECTORS.replyBox);
+  const exact = doc.querySelector(SHARED_SELECTORS.replyBox) || doc.querySelector(SMC_SELECTORS.replyBox);
   if (exact) return { el: exact, via: 'exact selector' };
 
   const candidates = [...doc.querySelectorAll('[contenteditable="true"], [contenteditable=""], textarea')]
@@ -180,17 +185,25 @@ function classifyNote(el) {
 }
 
 /* ------------------------------------------------------------------ *
- * Profile: the local prototype at localhost:3000
+ * Profile: the onepane-mock SMC console, at localhost:3000/mock-smc/
+ *
+ * Development only. It exists only while `npm run mock` is running, and it is
+ * keyed on the path as well as the port so the overlay never lands on the
+ * Control Center, which the same server serves at `/`.
  * ------------------------------------------------------------------ */
+
+const MOCK_CONSOLE_PATH = '/mock-smc/';
 
 const demoProfile = {
   id: 'demo',
-  label: 'One Pane prototype (localhost)',
+  label: 'onepane-mock SMC console (localhost)',
 
-  matches: (location) => location.hostname === 'localhost' && location.port === '3000',
+  matches: (location) => location.hostname === 'localhost'
+    && location.port === '3000'
+    && location.pathname.startsWith(MOCK_CONSOLE_PATH),
 
   /**
-   * The demo backend already holds the full ticket, so this profile reads only
+   * The mock backend already holds the full ticket, so this profile reads only
    * the id and lets the server resolve it. It deliberately does NOT fake DOM
    * extraction: the mock renders human-formatted dates and escaped bodies, and
    * parsing those back into a ticket would prove nothing about the real path.
@@ -200,7 +213,10 @@ const demoProfile = {
     return ticketId ? { ticketId, ticket: null } : null;
   },
 
-  findReplyBox: (doc) => doc.querySelector(SHARED_SELECTORS.replyBox),
+  findReplyBox: (doc) => {
+    const el = doc.querySelector(SHARED_SELECTORS.replyBox);
+    return el ? { el, via: 'exact selector' } : null;
+  },
   onTicketChange: watchTicketAttribute,
 };
 
@@ -220,7 +236,7 @@ const smcProfile = {
 
   /**
    * Extract a ticket in the shape `buildContext()` consumes (see the mock
-   * corpus in data/tickets.js for the full field list).
+   * corpus in onepane-mock/data/tickets.js for the full field list).
    *
    * Fields SMC does not expose in the DOM come back empty rather than guessed -
    * retrieval scores an absent field as no signal, which is correct, whereas a
@@ -265,7 +281,7 @@ const smcProfile = {
     };
   },
 
-  findReplyBox: (doc) => findReplyBox(doc)?.el || null,
+  findReplyBox: (doc) => findReplyBox(doc),
 
   /**
    * SMC is a single-page app, so a ticket change is a DOM swap rather than a
@@ -345,62 +361,171 @@ export function selectProfile(location = window.location) {
 }
 
 /**
- * The exact nodes this extension last put in the reply box.
+ * A plain form control's visible content is its `.value` string - DOM nodes
+ * appended into a `<textarea>` are not rendered and do not touch `.value` at
+ * all. SMC's real note box (`#app_note_body`, confirmed 2026-09-21) is exactly
+ * this: a plain `<textarea name="app_note[body]">`, not the `contenteditable`
+ * div the mock uses. The two need genuinely different write strategies, not
+ * just different selectors.
+ */
+const isValueBased = (el) => el.tagName === 'TEXTAREA' || el.tagName === 'INPUT';
+
+/**
+ * Set a form control's value the way a real keystroke would.
  *
- * Held as node references rather than as a marker attribute or a saved HTML
- * string, because both of those go wrong in a contenteditable: browsers rewrite
- * markup as it is edited, and any marker we injected would ride along into the
- * posted reply. Node identity survives both.
+ * Assigning `el.value = x` directly is invisible to a framework-controlled
+ * input (React et al. intercept the setter on the element's own instance to
+ * track edits): the DOM updates but the framework's model does not, and the
+ * next render reverts it. Calling the setter from the prototype bypasses that
+ * per-instance interception.
+ */
+function setNativeValue(el, value) {
+  const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
+}
+
+/**
+ * What this extension last put in the reply box, so a regenerate can remove
+ * only that and leave anything the analyst typed themselves.
+ *
+ * Two shapes, matching the two write strategies below: node references for a
+ * contenteditable (identity survives the browser rewriting markup as it is
+ * edited, unlike a marker or a saved HTML string), or a character range for a
+ * value-based control (there are no child nodes to track identity through).
  */
 let insertedNodes = [];
+let insertedRange = null;
 
 /** Forget the tracked draft - call when the analyst moves to another ticket. */
 export function resetDraftTracking() {
   insertedNodes = [];
+  insertedRange = null;
 }
 
 /**
  * Write a draft into the reply box.
  *
  * Kept here rather than in the panel because it is the one place the extension
- * touches page state, and it should be as easy to audit as the read path. The
- * draft arrives already sanitized by server/sanitize.js against the tag
- * allowlist SMC actually renders.
+ * touches page state, and it should be as easy to audit as the read path.
+ *
+ * SMC's own note field (confirmed 2026-09-21 against ticket 3808633) is a
+ * plain `<textarea>` that takes literal markup and has its own Preview link
+ * to render it - the same relationship a Markdown editor has to its preview
+ * pane. So it gets the sanitized `html` draft typed in verbatim, tags and
+ * all, not the plain-text rendering: `server/sanitize.js` already constrains
+ * that markup to a fixed, harmless tag allowlist (`b`, `i`, `u`, `p`, `ul`,
+ * `code`, ...), which only matters at all because something downstream is
+ * going to interpret it as HTML. `text` is kept for a genuinely plain
+ * destination that cannot render markup at all, should one turn up.
  *
  * Anything the analyst typed themselves is never touched. On a regenerate we
- * remove only the nodes we added last time and put the new draft in their
- * place - so a second draft replaces the first instead of stacking under it,
- * while half-written analyst text above it survives.
+ * remove only what we added last time and put the new draft in its place - so
+ * a second draft replaces the first instead of stacking under it, while
+ * half-written analyst text survives. For a value-based box that guarantee
+ * only holds while our text is still there unedited; if the analyst has typed
+ * into it since, it is no longer safely ours to remove, so the new draft is
+ * appended after it instead of overwriting their edit.
  *
  * @param {HTMLElement} box
- * @param {string} html sanitized draft markup
+ * @param {object} draft
+ * @param {string} draft.html sanitized draft markup - rendered directly in a
+ *   contenteditable, typed verbatim (tags and all) into a value-based box
+ * @param {string} draft.text plain-text rendering of the same draft, used for
+ *   a value-based box only if `html` is unavailable
  * @param {object} [opts]
  * @param {boolean} [opts.replace] drop our previous draft first
  */
-export function writeDraft(box, html, { replace = false } = {}) {
+export function writeDraft(box, { html, text }, { replace = false } = {}) {
   if (!box) throw new Error('Could not find the reply box on this page');
 
-  if (replace) {
-    insertedNodes.forEach((node) => node.remove());
+  if (isValueBased(box)) {
+    let base = box.value;
+
+    if (replace && insertedRange && insertedRange.box === box
+        && base.slice(insertedRange.start, insertedRange.end) === insertedRange.text) {
+      base = base.slice(0, insertedRange.start) + base.slice(insertedRange.end);
+    }
+
+    const draftContent = String(html || text || '').trim();
+    const separator = base.trim() ? '\n\n' : '';
+    const start = base.length + separator.length;
+
+    setNativeValue(box, base + separator + draftContent);
+    insertedRange = { box, start, end: start + draftContent.length, text: draftContent };
     insertedNodes = [];
+  } else {
+    if (replace) {
+      insertedNodes.forEach((node) => node.remove());
+      insertedNodes = [];
+    }
+
+    // A <template> parses the markup inert - nothing in it can run on the way in.
+    const template = document.createElement('template');
+    template.innerHTML = html;
+
+    // Only separate from analyst text that is actually there.
+    const separator = box.innerHTML.trim()
+      ? [document.createElement('br'), document.createElement('br')]
+      : [];
+
+    const nodes = [...separator, ...template.content.childNodes];
+    nodes.forEach((node) => box.append(node));
+    insertedNodes = nodes;
+    insertedRange = null;
   }
-
-  // A <template> parses the markup inert - nothing in it can run on the way in.
-  const template = document.createElement('template');
-  template.innerHTML = html;
-
-  // Only separate from analyst text that is actually there.
-  const separator = box.innerHTML.trim()
-    ? [document.createElement('br'), document.createElement('br')]
-    : [];
-
-  const nodes = [...separator, ...template.content.childNodes];
-  nodes.forEach((node) => box.append(node));
-  insertedNodes = nodes;
 
   // Editors backed by a framework model only notice programmatic edits when
   // they see the event a real keystroke would have produced.
   box.dispatchEvent(new Event('input', { bubbles: true }));
 
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+/**
+ * Read whatever is currently in the reply box, regardless of who put it
+ * there - a One Pane draft, the analyst's own typing, or a mix. That is the
+ * whole point of Polish: it works on the box as it stands, not on a draft
+ * object this extension remembers generating.
+ *
+ * @param {HTMLElement} box
+ * @returns {string} `.value` for a value-based box (already literal
+ *   characters, which may include typed HTML tags), `.innerHTML` for a
+ *   contenteditable
+ */
+export function readReplyBox(box) {
+  if (!box) return '';
+  return isValueBased(box) ? box.value : box.innerHTML;
+}
+
+/**
+ * Replace the entire contents of the reply box with `draft`.
+ *
+ * Distinct from `writeDraft()`: Polish acts on the whole box on purpose, at
+ * the analyst's explicit request, so there is nothing of "theirs" left to
+ * preserve alongside it - the polished text *is* the replacement for
+ * everything that was there. Tracking is cleared rather than pointed at the
+ * new content, so a later Draft-tab regenerate does not assume it owns text
+ * that came from a different action.
+ *
+ * @param {HTMLElement} box
+ * @param {object} draft
+ * @param {string} draft.html
+ * @param {string} draft.text
+ */
+export function replaceReplyBox(box, { html, text }) {
+  if (!box) throw new Error('Could not find the reply box on this page');
+
+  if (isValueBased(box)) {
+    setNativeValue(box, String(html || text || '').trim());
+  } else {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    box.replaceChildren(...template.content.childNodes);
+  }
+
+  insertedNodes = [];
+  insertedRange = null;
+
+  box.dispatchEvent(new Event('input', { bubbles: true }));
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }

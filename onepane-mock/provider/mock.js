@@ -13,7 +13,8 @@
  * degrades to a safe generic draft.
  */
 
-const { sanitizeHtml } = require('../sanitize');
+const { sanitizeHtml } = require('../../server/sanitize');
+const { suggestNextSteps } = require('../../server/suggestions');
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -287,7 +288,9 @@ const TONE_TRANSFORMS = {
 /**
  * @returns {{html: string, intent: string, provider: string, instructionApplied?: boolean}}
  */
-async function generate({ ctx, docs, confidence, tones = [], instruction = '', previousDraft = null }) {
+async function generate({
+  ctx, docs, confidence, tones = [], instruction = '', previousDraft = null,
+}) {
   let html;
   let intent;
 
@@ -296,7 +299,7 @@ async function generate({ ctx, docs, confidence, tones = [], instruction = '', p
     html = previousDraft;
     intent = 'mock_revised';
   } else {
-    const greeting = `<p>Hi ${esc(ctx.contactFirstName)},</p>`;
+    const greeting = `<p>Hi ${esc(ctx.greetingName)},</p>`;
 
     let built;
     if (confidence.shouldAbstain) {
@@ -327,4 +330,45 @@ async function generate({ ctx, docs, confidence, tones = [], instruction = '', p
   };
 }
 
-module.exports = { generate, TONE_TRANSFORMS };
+/**
+ * "Suggest a next step" has no offline stand-in either - same reasoning as
+ * `answer()`. Wraps the deterministic rule-based read on the ticket
+ * (server/suggestions.js) in the same `{label, instruction}` shape a real
+ * provider's model-generated suggestions use, so the panel never needs to
+ * know which kind it got. Unlike `answer()`, this always has *something* to
+ * return - it is itself the fallback a real provider degrades to - so it
+ * never throws.
+ */
+async function suggest({ ctx, confidence }) {
+  const suggestions = suggestNextSteps(ctx, confidence)
+    .map(({ label, instruction }) => ({ label, instruction }));
+  return { suggestions, provider: 'mock' };
+}
+
+/**
+ * Ask has no offline stand-in - the mock draft generator only works because it
+ * has hand-built templates for the demo tickets, and a free-form question has
+ * no template to match against. Say so plainly rather than faking an answer.
+ */
+async function answer() {
+  return {
+    text: 'The offline generator has no model behind it, so it cannot answer questions. '
+      + 'Run the server with ONEPANE_PROVIDER=openwebui or claude in .env to use Ask.',
+    provider: 'mock',
+  };
+}
+
+/**
+ * Unlike `answer()`, this cannot return an explanatory message as a "success" -
+ * Polish's result overwrites whatever the analyst had in the reply box, so a
+ * placeholder string here would destroy their real text instead of just
+ * displaying uselessly. Throwing is what keeps that from happening.
+ */
+async function polish() {
+  throw new Error(
+    'The offline generator has no model behind it, so it cannot polish text. '
+      + 'Run the server with ONEPANE_PROVIDER=openwebui or claude in .env to use Polish.',
+  );
+}
+
+module.exports = { generate, suggest, answer, polish, TONE_TRANSFORMS };

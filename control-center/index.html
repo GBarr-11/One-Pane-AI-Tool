@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>One Pane Control Center</title>
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script>
+  // Apply the saved theme before first paint, so dark mode never flashes light.
+  try {
+    const t = localStorage.getItem('onePane.cc.theme');
+    if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  } catch { /* storage blocked: follow the OS */ }
+</script>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3.5 2.5 20h19L12 3.5z"/><path d="M12 10v4.5M12 17.2v.3"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></symbol>
+    <symbol id="i-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4.5M12 15.5v.3"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="7" rx="1"/><rect x="3.5" y="13" width="17" height="7" rx="1"/><path d="M7 7.5h.01M7 16.5h.01M11 7.5h6M11 16.5h6"/></symbol>
+    <symbol id="i-puzzle" viewBox="0 0 24 24"><path d="M9 4h4v2.5a1.5 1.5 0 0 0 3 0V4h4v5h-2.5a1.5 1.5 0 0 0 0 3H20v8h-5v-2.5a1.5 1.5 0 0 0-3 0V20H4v-8h2.5a1.5 1.5 0 0 0 0-3H4V4h5z"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.8 6.2L20 11l-6.2 1.8L12 19l-1.8-6.2L4 11l6.2-1.8z"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H11v15H5.5A1.5 1.5 0 0 0 4 20.5v-15zM20 5.5A1.5 1.5 0 0 0 18.5 4H13v15h5.5a1.5 1.5 0 0 1 1.5 1.5v-15z"/></symbol>
+    <symbol id="i-ticket" viewBox="0 0 24 24"><path d="M3.5 7.5v-2h17v2a2 2 0 0 0 0 4v2a2 2 0 0 0 0 4v2h-17v-2a2 2 0 0 0 0-4v-2a2 2 0 0 0 0-4z"/><path d="M9 9h6M9 15h6"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9L20 16M20 20v-4h-4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6 6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/></symbol>
+    <symbol id="i-flask" viewBox="0 0 24 24"><path d="M9.5 3.5h5M10.5 3.5v6L4.8 18.6A1.3 1.3 0 0 0 6 20.5h12a1.3 1.3 0 0 0 1.2-1.9L13.5 9.5v-6"/><path d="M7.5 14.5h9"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol>
+  </defs>
+</svg>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#overview" aria-label="One Pane Control Center">
+      <img src="logo.svg" alt="">
+      <span class="word">One<b>Pane</b></span>
+    </a>
+    <span class="brand-sub">Control Center</span>
+    <span class="spacer"></span>
+    <span class="updated" id="updated" aria-live="polite"><i class="dot"></i><span>Connecting…</span></span>
+    <span class="mode-pill" id="modePill">…</span>
+    <button class="icon-btn" id="themeBtn" type="button" aria-label="Toggle dark mode">
+      <svg class="i"><use href="#i-moon"/></svg>
+    </button>
+  </div>
+</header>
+
+<div class="mock-banner" id="mockBanner" hidden>
+  <div class="mock-banner-inner">
+    <svg class="i"><use href="#i-flask"/></svg>
+    <span><strong>Mock pack loaded.</strong> Tickets, techdocs, and precedent on this server are invented fixtures from <code>onepane-mock/</code>.</span>
+    <a id="mockConsoleLink" href="/mock-smc/">Open the mock SMC console →</a>
+  </div>
+</div>
+
+<div class="band">
+  <div class="hero">
+    <div class="hero-panel">
+      <p class="eyebrow">One Pane · Draft pipeline</p>
+      <h1>Control Center</h1>
+      <p class="hero-lede" id="lede">Reading the server’s wiring…</p>
+    </div>
+    <div class="stats" id="stats" aria-label="Server at a glance"></div>
+  </div>
+</div>
+
+<nav class="tabs-wrap" aria-label="Sections">
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" data-tab="overview" aria-selected="true">Overview</button>
+    <button class="tab" role="tab" data-tab="activity" aria-selected="false">Activity</button>
+    <button class="tab" role="tab" data-tab="config" aria-selected="false">Configuration</button>
+    <button class="tab" role="tab" data-tab="diagnostics" aria-selected="false">Diagnostics</button>
+  </div>
+</nav>
+
+<main>
+  <!-- ============================================================ -->
+  <section id="tab-overview" role="tabpanel">
+    <div class="block">
+      <div class="section-head">
+        <div class="grow">
+          <h2>How It Connects</h2>
+          <p>Every hop a draft takes, from the analyst’s console to the reply box. Nothing is ever sent - the analyst posts.</p>
+        </div>
+        <button class="btn" id="recheckBtn" type="button"><svg class="i"><use href="#i-refresh"/></svg>Re-check connections</button>
+      </div>
+      <div class="diagram-wrap" id="diagram"></div>
+      <div class="legend" aria-hidden="true">
+        <span><i class="sw" style="background:var(--green)"></i>Ready</span>
+        <span><i class="sw" style="background:var(--amber)"></i>Needs setup</span>
+        <span><i class="sw" style="background:var(--red)"></i>Failing</span>
+        <span><i class="sw" style="background:var(--line)"></i>Not checked / outside this server</span>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="section-head"><div class="grow"><h2>Components</h2><p>Live state of each part the server depends on. Secrets are only ever shown as set or unset.</p></div></div>
+      <div class="cards" id="cards"></div>
+    </div>
+
+    <div class="block">
+      <div class="section-head"><div class="grow"><h2>Production Readiness</h2><p>What stands between this build and a deployed tool. Checked items are read live from the server.</p></div></div>
+      <ul class="checklist" id="readiness"></ul>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="tab-activity" role="tabpanel" hidden>
+    <div class="section-head">
+      <div class="grow">
+        <h2>Recent Activity</h2>
+        <p>The last 200 API calls, in memory only. Metadata only - no drafts, notes, questions, or query text are recorded.</p>
+      </div>
+      <div class="chips" id="callerChips" role="group" aria-label="Filter by caller"></div>
+    </div>
+    <div class="split">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Time</th><th>Caller</th><th>Route</th><th>Ticket</th><th>Provider</th><th>Confidence</th><th>Status</th><th class="num">ms</th></tr></thead>
+          <tbody id="activityRows"></tbody>
+        </table>
+      </div>
+      <div>
+        <h3 style="margin-bottom:10px">Calls By Route</h3>
+        <div class="bars" id="routeBars"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="tab-config" role="tabpanel" hidden>
+    <div class="block">
+      <div class="section-head">
+        <div class="grow">
+          <h2>Server Configuration</h2>
+          <p>Read from <code>.env</code> at startup. Edit <code>.env</code> and restart the server to change anything here - this page is read-only on purpose.</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Variable</th><th>State</th><th>Value</th><th>What it does</th></tr></thead>
+          <tbody id="envRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="section-head">
+        <div class="grow">
+          <h2>Extension Settings</h2>
+          <p>The extension has no environment. Its backends are set on its own options page (<code>chrome://extensions</code> → One Pane → Details → Extension options) and are not visible to this server.</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Setting</th><th>Shipped default</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">backends.onePane</td><td class="mono" id="extOnePane">http://localhost:3000</td><td>This server. No staging URL yet (<code>STAGING_BACKENDS.onePane</code> is null).</td></tr>
+            <tr><td class="mono">backends.aiCtrl</td><td class="mono">http://localhost:8080</td><td>Cole’s AI CTRL Mastra service, for the Ask tab. Staging: <span class="mono">ai-assistant-staging.expedient.cloud</span>.</td></tr>
+            <tr><td class="mono">content script</td><td class="mono">app.expedient.com/*</td><td>Plus <span class="mono">localhost:3000/mock-smc/*</span> for the mock console in development. Never this page.</td></tr>
+            <tr><td class="mono">autoDraft / autoOpen</td><td class="mono">false / false</td><td>Off so an unrequested draft never spends tokens.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section id="tab-diagnostics" role="tabpanel" hidden>
+    <div class="section-head">
+      <div class="grow">
+        <h2>Diagnostics</h2>
+        <p>Read-only probes against the live services. Every call here is a GET and shows up in Activity.</p>
+      </div>
+    </div>
+    <div class="tools">
+      <form class="tool" id="confForm">
+        <h3>Confluence Search</h3>
+        <p>What the knowledge base returns for a phrase. Titles, links, and excerpts - what the wiki’s own search shows this account.</p>
+        <div class="field-row">
+          <input type="text" id="confQ" placeholder="e.g. vpn mfa push" autocomplete="off" aria-label="Search terms">
+          <button class="btn primary" type="submit"><svg class="i"><use href="#i-search"/></svg>Search</button>
+        </div>
+        <div class="result" id="confResult"></div>
+      </form>
+
+      <form class="tool" id="smcForm">
+        <h3>SMC Ticket Mapping</h3>
+        <p>Fetches one real ticket and reports how it mapped - field presence and note roles, with no note bodies. Use it to confirm the adapter’s field map.</p>
+        <div class="field-row">
+          <input type="text" id="smcId" placeholder="Ticket number" autocomplete="off" inputmode="numeric" aria-label="Ticket number">
+          <button class="btn primary" type="submit"><svg class="i"><use href="#i-ticket"/></svg>Check</button>
+        </div>
+        <div class="result" id="smcResult"></div>
+      </form>
+
+      <div class="tool">
+        <h3>Model Gateway</h3>
+        <p>Asks the active provider for its model list - a free call that spends no tokens - and checks the configured model is on it.</p>
+        <button class="btn" id="probeProviderBtn" type="button"><svg class="i"><use href="#i-spark"/></svg>Probe provider</button>
+        <div class="result" id="providerResult"></div>
+      </div>
+
+      <div class="tool">
+        <h3>Raw Status</h3>
+        <p>The exact snapshot this page renders from, as <code>GET /api/status</code> returns it.</p>
+        <button class="btn" id="rawBtn" type="button">Show JSON</button>
+        <div class="result" id="rawResult"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="inner">
+    <span>One Pane <span id="version"></span></span>
+    <span>Read + draft only. The analyst sends.</span>
+    <span id="bindNote"></span>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

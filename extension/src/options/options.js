@@ -24,6 +24,7 @@ async function restore() {
   $('onePane').value = config.backends.onePane;
   $('aiCtrl').value = config.backends.aiCtrl;
   $('side').value = config.side;
+  $('theme').value = config.theme;
   $('autoOpen').checked = config.autoOpen;
   $('askEnabled').checked = config.askEnabled;
   $('autoDraft').checked = config.autoDraft;
@@ -38,6 +39,7 @@ async function save() {
       aiCtrl: $('aiCtrl').value.trim().replace(/\/+$/, ''),
     },
     side: $('side').value,
+    theme: $('theme').value,
     autoOpen: $('autoOpen').checked,
     askEnabled: $('askEnabled').checked,
     autoDraft: $('autoDraft').checked,

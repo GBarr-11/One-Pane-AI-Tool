@@ -11,6 +11,8 @@
 export const MSG = {
   GENERATE_DRAFT: 'generate-draft',
   ASK_AI_CTRL: 'ask-ai-ctrl',
+  POLISH_TEXT: 'polish-text',
+  GET_SUGGESTIONS: 'get-suggestions',
   HEALTH: 'health',
   /** Background -> content script: the toolbar icon was clicked. */
   TOGGLE_PANEL: 'toggle-panel',

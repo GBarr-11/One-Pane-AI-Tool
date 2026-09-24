@@ -1,0 +1,31 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "one-pane-server",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "start"
+      ],
+      "port": 3000
+    },
+    {
+      "name": "one-pane-mock",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "mock"
+      ],
+      "port": 3000
+    },
+    {
+      "name": "one-pane-mock-offline",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "mock:offline"
+      ],
+      "port": 3000
+    }
+  ]
+}

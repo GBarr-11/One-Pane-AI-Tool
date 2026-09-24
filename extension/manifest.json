@@ -19,7 +19,7 @@
 
   "content_scripts": [
     {
-      "matches": ["https://app.expedient.com/*", "http://localhost:3000/*"],
+      "matches": ["https://app.expedient.com/*", "http://localhost:3000/mock-smc/*"],
       "js": ["src/content/loader.js"],
       "run_at": "document_idle"
     }
@@ -34,7 +34,18 @@
 
   "options_page": "src/options/options.html",
 
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+
   "action": {
-    "default_title": "One Pane"
+    "default_title": "One Pane",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
   }
 }

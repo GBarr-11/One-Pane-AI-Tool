@@ -8,7 +8,6 @@
  */
 
 import { loadConfig } from '../shared/config.js';
-import { resolveAuthContext } from '../shared/contracts.js';
 import { MSG } from '../shared/messages.js';
 
 /** Fail loudly rather than leaving the panel spinning on a hung backend. */
@@ -54,13 +53,14 @@ async function requestJson(url, options = {}) {
  * Draft a reply for a ticket scraped out of the page.
  *
  * `ticket` carries the DOM-extracted ticket so the backend can draft for a
- * ticket it has never seen. The current prototype server only resolves
- * `ticketId` against its mock corpus, so until it accepts an inline ticket
- * (see extension/README.md) this path works only for the five demo tickets.
+ * ticket it has never seen. The server resolves `ticketId` against SMC first
+ * when the API is configured, then falls back to this inline ticket.
  *
  * `tones` and `instruction` carry the analyst's steering; `previousDraft` turns
  * the request into a revision of what they are already looking at rather than a
- * fresh draft.
+ * fresh draft. A "Suggest a next step" pill is not a separate parameter here -
+ * clicking one just populates `instruction` with that suggestion's text, the
+ * same as if the analyst had typed it themselves.
  *
  * @param {{ticketId: string, ticket: object, tones?: string[],
  *   instruction?: string, previousDraft?: string|null}} payload
@@ -80,28 +80,61 @@ async function generateDraft(payload) {
 }
 
 /**
- * Put a natural-language question to Cole's AI CTRL agent.
+ * "Suggest a next step" for the ticket currently on screen.
  *
- * Read-only by construction: `/api/query` only ever reads from his adapters.
- * The write-capable endpoint on that service is `/api/workflows/:id/execute`,
- * and One Pane deliberately never calls it.
+ * Analyst-initiated (a button, not automatic) - unlike the rest of this
+ * file's calls, the server-side default provider can make a real model call
+ * here, so this must never fire on its own.
  *
- * @param {{query: string}} payload
- * @returns {Promise<import('../shared/contracts.js').QueryResponse>}
+ * @param {{ticketId: string, ticket: object}} payload
  */
-async function askAiCtrl(payload) {
+async function getSuggestions(payload) {
   const { backends } = await loadConfig();
-  const authContext = await resolveAuthContext();
-
-  const data = await requestJson(`${backends.aiCtrl}/api/query`, {
+  return requestJson(`${backends.onePane}/api/suggestions`, {
     method: 'POST',
-    body: JSON.stringify({ query: payload.query, authContext }),
+    body: JSON.stringify({
+      ticketId: payload.ticketId,
+      ticket: payload.ticket,
+    }),
   });
+}
 
-  // His agent reports failure in the body with a 200, so surface it as an error
-  // rather than rendering an empty answer.
-  if (data.success === false) throw new Error(data.error || 'AI CTRL could not answer that');
-  return data;
+/**
+ * Ask a question about the ticket currently on screen.
+ *
+ * Placeholder for Cole's AI CTRL agent (see extension/README.md): that system
+ * is role-aware and reads across tickets, alerts, and platform state, with its
+ * own audit log. This calls One Pane's own `/api/ask` instead, which answers
+ * from the same gateway the Draft tab uses, grounded only in this one ticket's
+ * thread - real, but a narrower answer than "AI CTRL" implies. Swap this back
+ * to his `/api/query` once that integration lands.
+ *
+ * @param {{ticketId: string, ticket: object, question: string}} payload
+ */
+async function askQuestion(payload) {
+  const { backends } = await loadConfig();
+  return requestJson(`${backends.onePane}/api/ask`, {
+    method: 'POST',
+    body: JSON.stringify({
+      ticketId: payload.ticketId,
+      ticket: payload.ticket,
+      question: payload.question,
+    }),
+  });
+}
+
+/**
+ * Clean up whatever text the analyst hands over - grammar, structure, and the
+ * same tag allowlist everything else here renders into.
+ *
+ * @param {{text: string}} payload
+ */
+async function polishText(payload) {
+  const { backends } = await loadConfig();
+  return requestJson(`${backends.onePane}/api/polish`, {
+    method: 'POST',
+    body: JSON.stringify({ text: payload.text }),
+  });
 }
 
 /** Both backends, so the panel can say which half is down. */
@@ -121,7 +154,9 @@ async function health() {
 
 const HANDLERS = {
   [MSG.GENERATE_DRAFT]: generateDraft,
-  [MSG.ASK_AI_CTRL]: askAiCtrl,
+  [MSG.ASK_AI_CTRL]: askQuestion,
+  [MSG.POLISH_TEXT]: polishText,
+  [MSG.GET_SUGGESTIONS]: getSuggestions,
   [MSG.HEALTH]: health,
 };
 

@@ -42,6 +42,7 @@ const OVERLAY_KEY = 'onePane.overlay';
  * @property {boolean} autoOpen    Drop the panel down on load, rather than
  *                                 waiting for the analyst to pull it down.
  * @property {'right'|'left'} side Which edge the panel hangs from.
+ * @property {'light'|'dark'|'auto'} theme  'auto' follows the OS setting.
  */
 
 /** @type {OnePaneConfig} */
@@ -53,6 +54,7 @@ export const DEFAULT_CONFIG = {
   autoDraft: false,
   autoOpen: false,
   side: 'right',
+  theme: 'light',
 };
 
 /**
@@ -61,6 +63,9 @@ export const DEFAULT_CONFIG = {
  * @property {number} height
  * @property {number} margin
  * @property {{x: number, y: number} | null} position  set once dragged
+ * @property {number | null} launcherX  collapsed-launcher x along the top
+ *                                      bar, set once dragged; null follows
+ *                                      `side`/`margin` instead
  * @property {boolean} open  remembered across page loads
  */
 
@@ -70,6 +75,7 @@ export const DEFAULT_OVERLAY = {
   height: 620,
   margin: 16,
   position: null,
+  launcherX: null,
   open: false,
 };
 

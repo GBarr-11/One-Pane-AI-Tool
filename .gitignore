@@ -6,3 +6,6 @@ node_modules/
 .env
 .env.*
 !.env.example
+
+# Internal Expedient API spec: kept locally, not published. See docs/smc-api/README.md.
+docs/smc-api/openapi-v3.json

@@ -1,0 +1,456 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>One Pane Round 3</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --red:#F20505; --fuchsia:#D30566; --orchid:#5433CC; --amber:#F48C06; --teal:#2EB2B2; --green:#1F9D55;
+    --black:#000; --charcoal:#323232; --steel:#646464; --smoke:#D2D2D2; --cloud:#F0F0F0; --white:#fff;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { width:1800px; background:#EFEFEF; font-family:Inter, sans-serif; color:#000; padding:56px 60px 64px; }
+  .mono { font-family:'JetBrains Mono', monospace; }
+  .serif { font-family:'Instrument Serif', serif; font-weight:400; }
+
+  /* ---------- board chrome ---------- */
+  .eyebrow { font-size:15px; font-weight:500; }
+  .eyebrow b { color:var(--red); font-weight:500; }
+  .head { display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:34px; }
+  h1 { font-size:66px; font-weight:800; letter-spacing:-2.6px; line-height:1; margin-top:12px; }
+  h1 i { color:var(--red); font-style:normal; }
+  .intro { width:640px; font-size:16px; line-height:1.5; color:#222; }
+  .cols { display:grid; grid-template-columns:repeat(3, 1fr); gap:30px; }
+  .ctitle { display:flex; align-items:center; gap:12px; font-size:27px; font-weight:800; letter-spacing:-.6px; }
+  .badge { width:28px; height:28px; background:var(--red); color:#fff; font-size:14px; font-weight:800; display:grid; place-items:center; letter-spacing:0; }
+  .cdesc { font-size:14px; line-height:1.5; color:#444; margin:8px 0 18px; min-height:63px; }
+  .stage { position:relative; height:1010px; background:#fff; border:1px solid var(--smoke); overflow:hidden; }
+  .tags { display:flex; flex-wrap:wrap; gap:6px; margin-top:14px; }
+  .tags span { font:500 11px 'JetBrains Mono', monospace; border:1px solid #bbb; padding:4px 8px; border-radius:99px; color:#333; background:#fff; }
+
+  /* ---------- fake SMC host page ---------- */
+  .smc-top { height:40px; background:#2b3a4a; display:flex; align-items:center; gap:10px; padding:0 14px; }
+  .smc-top i { display:block; height:8px; background:#51637a; border-radius:2px; }
+  .smc-body { padding:16px; }
+  .bar { height:9px; background:#E4E7EB; border-radius:2px; margin-bottom:10px; }
+  .smc-h { height:16px; width:52%; background:#C9CFD6; border-radius:2px; margin-bottom:16px; }
+  .note { border:1px solid #E1E4E8; border-radius:3px; padding:12px; margin-bottom:10px; }
+  .replybox { border:1px solid #B8C0CA; border-radius:3px; padding:12px; height:170px; font-size:11.5px; line-height:1.55; color:#333; background:#fff; }
+  .replybox p { margin-bottom:7px; }
+  .smc-lbl { font-size:10px; color:#6b7684; font-weight:600; text-transform:uppercase; letter-spacing:.6px; margin:14px 0 6px; }
+
+  /* shared logo */
+  .logo { width:26px; height:26px; flex:none; }
+  .word { font-weight:800; letter-spacing:-.3px; }
+  .word b { color:var(--red); font-weight:800; }
+
+  /* =====================================================================
+     A — DOCKED RAIL
+     ===================================================================== */
+  .a-host { position:absolute; inset:0; right:0; }
+  .a-panel { position:absolute; top:40px; right:0; bottom:0; width:430px; display:flex; background:#fff; border-left:1px solid #000; box-shadow:-18px 0 40px rgba(0,0,0,.12); }
+  .a-main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .a-rail { width:54px; background:#000; display:flex; flex-direction:column; align-items:center; padding:12px 0; gap:6px; }
+  .a-rail .logo { margin-bottom:14px; }
+  .a-ri { width:54px; height:52px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; color:#8a8a8a; font:600 8.5px Inter; letter-spacing:.4px; text-transform:uppercase; position:relative; }
+  .a-ri svg { width:17px; height:17px; stroke:currentColor; fill:none; stroke-width:1.6; }
+  .a-ri.on { color:#fff; }
+  .a-ri.on::before { content:''; position:absolute; right:0; top:8px; bottom:8px; width:3px; background:var(--red); }
+  .a-ri .dot { position:absolute; top:10px; right:14px; width:6px; height:6px; background:var(--amber); border-radius:50%; }
+  .a-rail .sp { flex:1; }
+  .a-hero { position:relative; padding:22px 24px 20px; border-bottom:1px solid var(--smoke); background:var(--cloud); }
+  .notch { position:absolute; width:26px; height:26px; }
+  .notch::before, .notch::after { content:''; position:absolute; background:var(--red); }
+  .notch.tl { top:0; left:0; } .notch.tl::before { top:0; left:0; width:26px; height:9px; } .notch.tl::after { top:0; left:0; width:9px; height:26px; }
+  .notch.br { bottom:0; right:0; } .notch.br::before { bottom:0; right:0; width:26px; height:9px; } .notch.br::after { bottom:0; right:0; width:9px; height:26px; }
+  .a-meta { font:500 11px 'JetBrains Mono'; color:var(--steel); display:flex; gap:10px; }
+  .a-meta b { color:#000; font-weight:700; }
+  .a-title { font-size:40px; line-height:1; margin:10px 0 6px; letter-spacing:-.5px; }
+  .a-title em { color:var(--red); }
+  .a-hero p { font-size:12.5px; color:#444; }
+  .a-body { padding:18px 24px; overflow:hidden; flex:1; }
+  .a-lbl { font-size:10.5px; font-weight:800; letter-spacing:1px; text-transform:uppercase; display:flex; align-items:center; gap:10px; margin:0 0 10px; }
+  .a-lbl::after { content:''; flex:1; height:1px; background:#000; }
+  .a-conf { display:grid; grid-template-columns:auto 1fr; gap:14px; align-items:center; margin-bottom:14px; }
+  .a-big { font-size:30px; font-weight:800; letter-spacing:-1px; display:flex; align-items:center; gap:10px; }
+  .a-seg { display:flex; gap:3px; } .a-seg i { width:9px; height:26px; background:var(--green); }
+  .a-conf small { font-size:12px; color:#444; line-height:1.45; }
+  .a-heads { border-left:4px solid var(--amber); background:#FFF6EA; padding:10px 12px; font-size:12px; line-height:1.45; margin-bottom:18px; }
+  .a-heads b { display:block; font-size:12px; margin-bottom:2px; }
+  .a-src { display:grid; grid-template-columns:26px 1fr auto; gap:6px 8px; padding:10px 0; border-bottom:1px solid var(--smoke); font-size:12.5px; }
+  .a-src .n { font:700 11px 'JetBrains Mono'; color:var(--red); padding-top:1px; }
+  .a-src .t { font-weight:700; }
+  .a-src .s { grid-column:2; font-size:11px; color:var(--steel); }
+  .a-src .sc { font:500 11px 'JetBrains Mono'; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 12px; }
+  .chip { border:1px solid #000; border-radius:99px; padding:6px 12px; font-size:11.5px; font-weight:500; }
+  .chip.on { background:#000; color:#fff; }
+  .a-input { border:1px solid #000; padding:10px 12px; font-size:12px; color:#8a8a8a; height:54px; margin-bottom:12px; }
+  .a-foot { border-top:1px solid #000; padding:14px 16px 14px 24px; display:flex; gap:8px; align-items:center; background:#fff; }
+  .pill { white-space:nowrap; border-radius:99px; padding:10px 18px; font-size:13px; font-weight:700; display:inline-flex; align-items:center; gap:8px; }
+  .pill.red { background:var(--red); color:#fff; }
+  .pill.line { border:1px solid #000; }
+  .pill.ghost { color:var(--steel); font-weight:500; padding:10px 0; }
+  .a-foot .grow { flex:1; }
+  .a-status { font:500 10.5px 'JetBrains Mono'; color:var(--steel); padding:0 24px 12px; display:flex; justify-content:space-between; }
+
+  /* =====================================================================
+     B — COMMAND STRIP
+     ===================================================================== */
+  .b-host .smc-body { padding:18px 20px; }
+  .b-sheet { position:absolute; left:20px; right:20px; bottom:304px; border-radius:18px; background:rgba(255,255,255,.86); backdrop-filter:blur(18px); border:1px solid rgba(0,0,0,.08); box-shadow:0 24px 60px rgba(0,0,0,.18), 0 2px 6px rgba(0,0,0,.06); overflow:hidden; }
+  .b-grad { height:4px; background:linear-gradient(90deg, var(--red), var(--fuchsia)); }
+  .b-sh { padding:16px 18px 6px; display:flex; align-items:center; gap:10px; }
+  .b-sh .t { font-size:15px; font-weight:800; flex:1; }
+  .b-sh .x { width:26px; height:26px; border-radius:50%; background:var(--cloud); display:grid; place-items:center; font-size:13px; color:var(--steel); }
+  .b-row { padding:8px 18px; }
+  .b-conf { display:flex; align-items:center; gap:12px; background:var(--cloud); border-radius:12px; padding:12px 14px; }
+  .b-ring { width:44px; height:44px; flex:none; }
+  .b-conf b { font-size:15px; display:block; }
+  .b-conf span { font-size:12px; color:var(--steel); }
+  .b-warn { display:flex; gap:10px; align-items:flex-start; border-radius:12px; padding:11px 14px; background:#FFF4E6; font-size:12px; line-height:1.45; }
+  .b-warn i { width:20px; height:20px; border-radius:50%; background:var(--amber); color:#fff; font:800 12px Inter; font-style:normal; display:grid; place-items:center; flex:none; }
+  .b-lbl { font-size:11px; font-weight:700; color:var(--steel); margin:6px 0 8px; }
+  .b-chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .b-chip { border-radius:99px; background:var(--cloud); padding:7px 12px; font-size:12px; font-weight:500; }
+  .b-chip.on { background:#000; color:#fff; }
+  .b-srcs { display:flex; flex-direction:column; gap:6px; }
+  .b-src { display:flex; align-items:center; gap:10px; border:1px solid #E6E6E6; border-radius:12px; padding:9px 12px; font-size:12px; }
+  .b-src .k { font:700 9.5px 'JetBrains Mono'; background:#000; color:#fff; border-radius:99px; padding:3px 7px; }
+  .b-src .k.t2 { background:var(--steel); }
+  .b-src .nm { flex:1; font-weight:600; }
+  .b-src .sc { font:500 11px 'JetBrains Mono'; color:var(--steel); }
+  .b-ask { margin:10px 18px 16px; display:flex; align-items:center; gap:8px; background:#fff; border:1px solid #D8D8D8; border-radius:99px; padding:6px 6px 6px 14px; font-size:12px; color:#8a8a8a; }
+  .b-ask > span:first-child { flex:1; }
+  .b-ask .go { flex:none; width:30px; height:30px; border-radius:50%; background:var(--red); display:grid; place-items:center; }
+  .b-ask .go svg { width:14px; height:14px; stroke:#fff; fill:none; stroke-width:2.4; }
+  .b-strip { position:absolute; left:20px; right:20px; bottom:240px; height:52px; border-radius:99px; background:#000; display:flex; align-items:center; padding:0 7px 0 12px; gap:8px; box-shadow:0 10px 30px rgba(0,0,0,.25); }
+  .b-strip .word { color:#fff; font-size:14px; }
+  .b-strip .id { font:500 11px 'JetBrains Mono'; color:#bbb; border:1px solid #333; border-radius:99px; padding:4px 9px; }
+  .b-strip .grow { flex:1; }
+  .b-btn { border-radius:99px; padding:9px 14px; font-size:12.5px; font-weight:700; color:#fff; background:#1d1d1d; display:inline-flex; align-items:center; gap:6px; }
+  .b-btn.red { background:var(--red); }
+  .b-btn svg { width:13px; height:13px; }
+  .b-dots { display:flex; gap:3px; margin-right:4px; } .b-dots i { width:6px; height:6px; border-radius:50%; background:var(--green); }
+  .b-reply { position:absolute; left:20px; right:20px; bottom:30px; }
+  .b-reply .replybox { height:176px; box-shadow:0 0 0 3px rgba(242,5,5,.18); border-color:var(--red); }
+  .b-reply .hl { background:linear-gradient(transparent 60%, rgba(242,5,5,.14) 60%); }
+  .b-states { position:absolute; left:20px; right:20px; top:128px; display:flex; flex-direction:column; gap:8px; }
+  .b-mini { height:40px; border-radius:99px; background:#000; display:flex; align-items:center; gap:8px; padding:0 6px 0 10px; transform-origin:left; }
+  .b-mini .word { color:#fff; font-size:12.5px; }
+  .b-mini .lbl { font:500 10px 'JetBrains Mono'; color:#888; margin-left:auto; margin-right:6px; }
+  .b-mini .b-btn { padding:6px 11px; font-size:11px; }
+  .b-cap { font:600 10px 'JetBrains Mono'; color:var(--steel); letter-spacing:.5px; text-transform:uppercase; margin-bottom:2px; }
+  .b-scrim { position:absolute; inset:40px 0 0 0; background:linear-gradient(rgba(255,255,255,0), rgba(0,0,0,.05)); pointer-events:none; }
+
+  /* =====================================================================
+     C — SIGNAL (dark telemetry)
+     ===================================================================== */
+  .c-host { background:#fff; position:absolute; inset:0; filter:saturate(.8); }
+  .c-panel { position:absolute; top:62px; left:34px; right:34px; bottom:26px; background:#0A0A0A; color:#fff; box-shadow:0 30px 70px rgba(0,0,0,.35); overflow:hidden; }
+  .c-head { position:relative; height:94px; padding:16px 18px; border-bottom:1px solid #262626; display:flex; gap:12px; }
+  .pix { position:absolute; top:0; right:0; display:grid; grid-template-columns:repeat(6, 16px); grid-auto-rows:16px; }
+  .pix i { display:block; } .pix .w { background:#fff; } .pix .r { background:var(--red); } .pix .g { background:repeating-linear-gradient(45deg,#3a3a3a 0 2px,#1a1a1a 2px 4px); } .pix .k { background:transparent; }
+  .c-head .word { font-size:17px; color:#fff; }
+  .c-id { font:500 11px 'JetBrains Mono'; color:#9a9a9a; margin-top:6px; }
+  .c-id b { color:#fff; font-weight:500; }
+  .c-tabs { display:flex; border-bottom:1px solid #262626; font:600 11px 'JetBrains Mono'; letter-spacing:.5px; text-transform:uppercase; }
+  .c-tabs div { padding:12px 18px; color:#777; }
+  .c-tabs .on { color:#fff; box-shadow:inset 0 -2px 0 var(--red); }
+  .c-tabs .kbd { margin-left:auto; color:#555; text-transform:none; letter-spacing:0; font-weight:500; }
+  .c-body { padding:16px 18px; }
+  .c-pipe { display:grid; grid-template-columns:repeat(5, 1fr); gap:3px; margin-bottom:6px; }
+  .c-pipe div { background:#161616; padding:8px 8px 7px; border-top:2px solid var(--teal); }
+  .c-pipe b { display:block; font:700 9.5px 'JetBrains Mono'; color:#ddd; text-transform:uppercase; letter-spacing:.4px; }
+  .c-pipe span { font:500 10px 'JetBrains Mono'; color:#777; }
+  .c-pipe .last { border-top-color:var(--red); }
+  .c-sub { font:500 10.5px 'JetBrains Mono'; color:#666; margin-bottom:16px; }
+  .c-grid { display:grid; grid-template-columns:150px 1fr; gap:3px; margin-bottom:14px; }
+  .c-stat { position:relative; background:#161616; padding:14px; }
+  .c-stat .k { font:600 10px 'JetBrains Mono'; color:#888; text-transform:uppercase; letter-spacing:.6px; }
+  .c-stat .v { font-size:44px; font-weight:800; letter-spacing:-2px; line-height:1.05; margin-top:6px; }
+  .c-stat .v small { font-size:15px; color:var(--teal); letter-spacing:0; margin-left:4px; }
+  .c-stat .notch.br::before, .c-stat .notch.br::after { background:var(--teal); }
+  .c-stat .notch { width:16px; height:16px; } .c-stat .notch.br::before { width:16px; height:5px; } .c-stat .notch.br::after { width:5px; height:16px; }
+  .c-meter { display:flex; gap:3px; margin-top:8px; } .c-meter i { flex:1; height:5px; background:var(--teal); }
+  .c-warn { background:#161616; padding:14px; border-left:3px solid var(--amber); font-size:12px; line-height:1.5; color:#ccc; }
+  .c-warn .k { color:var(--amber); font:700 10px 'JetBrains Mono'; letter-spacing:.6px; text-transform:uppercase; margin-bottom:4px; }
+  .c-lbl { font:700 10px 'JetBrains Mono'; color:#888; text-transform:uppercase; letter-spacing:.8px; margin:16px 0 8px; display:flex; justify-content:space-between; }
+  .c-tbl { width:100%; border-collapse:collapse; font-size:12px; }
+  .c-tbl td { padding:9px 0; border-top:1px solid #222; vertical-align:top; }
+  .c-tbl .ty { font:600 9.5px 'JetBrains Mono'; color:#888; width:66px; padding-top:11px; }
+  .c-tbl .nm b { font-weight:700; display:block; }
+  .c-tbl .nm span { color:#777; font-size:11px; }
+  .c-tbl .sc { width:92px; text-align:right; font:500 11px 'JetBrains Mono'; }
+  .c-tbl .sc i { display:block; height:3px; background:#2a2a2a; margin-top:6px; } .c-tbl .sc i u { display:block; height:3px; background:#fff; }
+  .c-cmd { display:flex; align-items:center; gap:8px; background:#161616; border:1px solid #2a2a2a; padding:10px 12px; font:500 12px 'JetBrains Mono'; color:#777; margin-top:4px; }
+  .c-cmd .p { color:var(--red); font-weight:700; }
+  .c-cmd .grow { flex:1; }
+  .c-cmd .k { border:1px solid #333; padding:2px 6px; font-size:10px; color:#888; }
+  .c-chips { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
+  .c-chip { border:1px solid #333; color:#bbb; border-radius:99px; padding:5px 11px; font:500 11px 'JetBrains Mono'; }
+  .c-chip.on { border-color:#fff; background:#fff; color:#000; }
+  .c-foot { position:absolute; left:0; right:0; bottom:0; border-top:1px solid #262626; padding:12px 18px; display:flex; align-items:center; gap:8px; background:#0A0A0A; }
+  .c-foot .pill.red { background:var(--red); }
+  .c-foot .pill.line { border-color:#444; color:#fff; font-weight:600; }
+  .c-foot .grow { flex:1; }
+  .c-foot .m { font:500 10px 'JetBrains Mono'; color:#555; text-align:right; line-height:1.5; }
+
+  /* ---------- notes ---------- */
+  .notes { display:grid; grid-template-columns:repeat(3, 1fr); gap:30px; margin-top:34px; }
+  .notes h3 { font-size:16px; font-weight:800; margin-bottom:8px; }
+  .notes p, .notes li { font-size:13.5px; line-height:1.55; color:#333; }
+  .notes ul { padding-left:18px; }
+  .notes code { font:500 12px 'JetBrains Mono'; background:#fff; padding:1px 5px; border:1px solid var(--smoke); }
+  .sw { display:flex; gap:6px; margin-top:10px; }
+  .sw div { flex:1; }
+  .sw i { display:block; height:26px; }
+  .sw span { font:500 10px 'JetBrains Mono'; color:#555; }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="lg" viewBox="0 0 48 48">
+    <rect x="3" y="3" width="42" height="42" rx="11" fill="#F0F0F0" stroke="#323232" stroke-width="3.5"/>
+    <path d="M14.5 15.5 7.5 24l7 8.5M33.5 15.5l7 8.5-7 8.5" fill="none" stroke="#F20505" stroke-width="4.2"/>
+    <circle cx="18.6" cy="24" r="2.5" fill="#F20505"/><circle cx="24" cy="24" r="2.5" fill="#F20505"/><circle cx="29.4" cy="24" r="2.5" fill="#F20505"/>
+  </symbol>
+  <symbol id="gl" viewBox="0 0 24 24">
+    <g fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6.5 6.5 1.8 12l4.7 5.5M17.5 6.5l4.7 5.5-4.7 5.5"/></g>
+    <g fill="currentColor"><circle cx="8.8" cy="12" r="1.55"/><circle cx="12" cy="12" r="1.55"/><circle cx="15.2" cy="12" r="1.55"/></g>
+  </symbol>
+  <symbol id="spk" viewBox="0 0 24 24"><g fill="currentColor"><path d="M11 2.5 12.6 8.4 18.5 10 12.6 11.6 11 17.5 9.4 11.6 3.5 10 9.4 8.4Z"/><path d="M18.3 14.4 19 16.9 21.5 17.6 19 18.3 18.3 20.8 17.6 18.3 15.1 17.6 17.6 16.9Z"/></g></symbol>
+</svg>
+
+<div class="head">
+  <div>
+    <div class="eyebrow">One<b>Pane</b> • Visual direction, round 3</div>
+    <h1>Three new shapes<i>.</i></h1>
+  </div>
+  <div class="intro">Rounds 1 and 2 restyled the same floating card. This round changes the shape of the panel instead. Each concept uses a different part of the Brand Book v1.6 that we haven't touched yet: the Code Notch and Instrument Serif, the Core Gradient and rounded "liquid glass" overlays, and the Digital Pattern with JetBrains Mono. The state is the same across all three: a draft just landed in the reply box on INC-48213.</div>
+</div>
+
+<div class="cols">
+
+  <!-- ================= A ================= -->
+  <div>
+    <div class="ctitle"><span class="badge">A</span>Docked Rail</div>
+    <div class="cdesc">A full-height sidebar pinned to the right edge, with a black icon rail for Draft, Ask, Polish and Sources. Nothing floats over the ticket. Red Code Notches frame the hero, and an Instrument Serif headline gives one moment of personality per state.</div>
+    <div class="stage">
+      <div class="a-host">
+        <div class="smc-top"><i style="width:70px"></i><i style="width:44px"></i><i style="width:44px"></i></div>
+        <div class="smc-body" style="width:120px">
+          <div class="smc-h" style="width:90%"></div>
+          <div class="bar"></div><div class="bar" style="width:70%"></div>
+          <div class="note"><div class="bar"></div><div class="bar" style="width:60%"></div></div>
+          <div class="note"><div class="bar"></div><div class="bar" style="width:80%"></div></div>
+        </div>
+      </div>
+      <div class="a-panel">
+        <div class="a-main">
+          <div class="a-hero">
+            <span class="notch tl"></span><span class="notch br"></span>
+            <div class="a-meta"><b>INC-48213</b><span>Acme Health</span><span>Sev 2</span></div>
+            <div class="a-title serif">Draft is <em>ready.</em></div>
+            <p>It's in the reply box. Review it, edit it, send it yourself.</p>
+          </div>
+          <div class="a-body">
+            <div class="a-lbl">Confidence</div>
+            <div class="a-conf">
+              <div class="a-big"><span class="a-seg"><i></i><i></i><i></i></span>High</div>
+              <small>Grounded in 4 sources:<br>2 techdocs, 2 resolved tickets</small>
+            </div>
+            <div class="a-heads"><b>Heads up</b>Customer mentions a second site. The draft only covers Columbus.</div>
+
+            <div class="a-lbl">Adjust</div>
+            <div class="chips"><span class="chip">More formal</span><span class="chip on">Friendlier</span><span class="chip">Shorter</span><span class="chip">More detailed</span></div>
+            <div class="a-input">e.g. Lead with the resolution, and drop the last paragraph</div>
+
+            <div class="a-lbl">Sources</div>
+            <div class="a-src"><span class="n">01</span><span class="t">KB-1142: VPN tunnel flaps after firmware 7.2 ↗</span><span class="sc mono">0.91</span><span class="s">Techdoc · Section 3: rollback procedure</span></div>
+            <div class="a-src"><span class="n">02</span><span class="t">INC-47102: IPsec drops every 8h ↗</span><span class="sc mono">0.84</span><span class="s">Resolved ticket · 12 days ago</span></div>
+            <div class="a-src"><span class="n">03</span><span class="t">KB-0987: Tunnel DPD timers ↗</span><span class="sc mono">0.72</span><span class="s">Techdoc · Section 1</span></div>
+          </div>
+          <div class="a-foot">
+            <span class="pill red"><svg width="16" height="16"><use href="#gl"/></svg>Apply changes</span>
+            <span class="pill line"><svg width="13" height="13"><use href="#spk"/></svg>Polish</span>
+            <span class="grow"></span>
+            <span class="pill ghost">Start over</span>
+          </div>
+          <div class="a-status"><span>claude-sonnet-5 · 2.1s</span><span>troubleshooting</span></div>
+        </div>
+        <div class="a-rail">
+          <svg class="logo"><use href="#lg"/></svg>
+          <div class="a-ri on"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg>Draft</div>
+          <div class="a-ri"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg>Ask</div>
+          <div class="a-ri"><svg viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><use href="#spk"/></svg>Polish</div>
+          <div class="a-ri"><span class="dot"></span><svg viewBox="0 0 24 24"><path d="M5 4h10l4 4v12H5z M9 12h6M9 16h6"/></svg>Sources</div>
+          <div class="sp"></div>
+          <div class="a-ri"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>Hide</div>
+        </div>
+      </div>
+    </div>
+    <div class="tags"><span>Code Notch</span><span>Instrument Serif</span><span>hard edges</span><span>pill actions</span><span>light</span></div>
+  </div>
+
+  <!-- ================= B ================= -->
+  <div>
+    <div class="ctitle"><span class="badge">B</span>Command Strip</div>
+    <div class="cdesc">A black pill attached to the top of the SMC reply box, so it's always next to what it writes. Collapsed, it's one row of buttons. Once there's a draft, a rounded glass sheet opens upward. The Core Gradient edge shows One Pane is working.</div>
+    <div class="stage">
+      <div class="b-host">
+        <div class="smc-top"><i style="width:70px"></i><i style="width:44px"></i><i style="width:44px"></i><i style="width:44px"></i></div>
+        <div class="smc-body">
+          <div class="smc-h"></div>
+          <div class="bar"></div><div class="bar" style="width:84%"></div>
+        </div>
+      </div>
+      <div class="b-states">
+        <div class="b-cap">Idle: before a draft</div>
+        <div class="b-mini"><svg class="logo" style="width:22px;height:22px"><use href="#lg"/></svg><span class="word">One<b>Pane</b></span><span class="lbl">INC-48213</span><span class="b-btn">Suggest</span><span class="b-btn"><svg><use href="#spk"/></svg>Polish</span><span class="b-btn red"><svg><use href="#gl"/></svg>Draft reply</span></div>
+      </div>
+      <div class="b-scrim"></div>
+
+      <div class="b-sheet">
+        <div class="b-grad"></div>
+        <div class="b-sh"><span class="t">Draft is in the reply box</span><span class="x">✕</span></div>
+        <div class="b-row">
+          <div class="b-conf">
+            <svg class="b-ring" viewBox="0 0 44 44"><circle cx="22" cy="22" r="18" fill="none" stroke="#DADADA" stroke-width="5"/><circle cx="22" cy="22" r="18" fill="none" stroke="#1F9D55" stroke-width="5" stroke-dasharray="103 113" transform="rotate(-90 22 22)" stroke-linecap="round"/><text x="22" y="26" text-anchor="middle" font-family="Inter" font-weight="800" font-size="11">4</text></svg>
+            <div><b>High confidence</b><span>4 sources: 2 techdocs, 2 resolved tickets</span></div>
+          </div>
+        </div>
+        <div class="b-row"><div class="b-warn"><i>!</i><div><b>Heads up.</b> Customer mentions a second site. The draft only covers Columbus.</div></div></div>
+        <div class="b-row">
+          <div class="b-lbl">Tone</div>
+          <div class="b-chips"><span class="b-chip">More formal</span><span class="b-chip on">Friendlier</span><span class="b-chip">Shorter</span><span class="b-chip">More detailed</span></div>
+        </div>
+        <div class="b-row">
+          <div class="b-lbl">Sources</div>
+          <div class="b-srcs">
+            <div class="b-src"><span class="k">KB</span><span class="nm">KB-1142: VPN tunnel flaps after firmware 7.2</span><span class="sc">0.91</span></div>
+            <div class="b-src"><span class="k t2">INC</span><span class="nm">INC-47102: IPsec drops every 8h</span><span class="sc">0.84</span></div>
+          </div>
+        </div>
+        <div class="b-ask"><span>Say what to change…</span><span class="go"><svg viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6"/></svg></span></div>
+      </div>
+
+      <div class="b-strip">
+        <svg class="logo"><use href="#lg"/></svg><span class="word">One<b>Pane</b></span>
+        <span class="id">INC-48213</span>
+        <span class="grow"></span>
+        <span class="b-dots"><i></i><i></i><i></i></span>
+        <span class="b-btn"><svg><use href="#spk"/></svg>Polish</span>
+        <span class="b-btn">Ask</span>
+        <span class="b-btn red"><svg><use href="#gl"/></svg>Apply</span>
+      </div>
+
+      <div class="b-reply">
+        <div class="smc-lbl">Reply to customer</div>
+        <div class="replybox">
+          <p>Hi Dana,</p>
+          <p class="hl">Thanks for the detail on the tunnel drops. This matches a known issue with firmware 7.2 on the edge pair at Columbus.</p>
+          <p>Here's what we recommend: roll back to 7.1.4 during tonight's window, then we'll confirm stability over the next 24 hours…</p>
+        </div>
+      </div>
+    </div>
+    <div class="tags"><span>Core Gradient</span><span>rounded glass overlay</span><span>anchored to reply box</span><span>smallest footprint</span></div>
+  </div>
+
+  <!-- ================= C ================= -->
+  <div>
+    <div class="ctitle"><span class="badge">C</span>Signal</div>
+    <div class="cdesc">A dark instrument panel that shows its work: the pipeline with timings, confidence as a large number, and sources as a scored table. Digital Pattern blocks in the header, JetBrains Mono for every value, a command line for changes. It swaps off-brand green for Signal Teal.</div>
+    <div class="stage">
+      <div class="c-host">
+        <div class="smc-top"><i style="width:70px"></i><i style="width:44px"></i><i style="width:44px"></i></div>
+        <div class="smc-body"><div class="smc-h"></div><div class="bar"></div><div class="bar" style="width:70%"></div></div>
+      </div>
+      <div class="c-panel">
+        <div class="c-head">
+          <svg class="logo" style="width:32px;height:32px"><use href="#lg"/></svg>
+          <div>
+            <div class="word">One<b>Pane</b></div>
+            <div class="c-id"><b>INC-48213</b> · acme-health · sev2 · vpn</div>
+          </div>
+          <div class="pix">
+            <i class="k"></i><i class="k"></i><i class="g"></i><i class="k"></i><i class="w"></i><i class="w"></i>
+            <i class="k"></i><i class="k"></i><i class="k"></i><i class="r"></i><i class="k"></i><i class="w"></i>
+            <i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="g"></i><i class="k"></i>
+            <i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="k"></i><i class="g"></i>
+          </div>
+        </div>
+        <div class="c-tabs"><div class="on">Draft</div><div>Ask AI CTRL</div><div>Polish</div><div class="kbd">Alt+O</div></div>
+        <div class="c-body">
+          <div class="c-pipe">
+            <div><b>Context</b><span>14 notes</span></div>
+            <div><b>Retrieve</b><span>4 hits</span></div>
+            <div><b>Generate</b><span>1.9s</span></div>
+            <div><b>Sanitize</b><span>0 strip</span></div>
+            <div class="last"><b>Reply box</b><span>written</span></div>
+          </div>
+          <div class="c-sub">▸ pipeline 2,140ms · claude-sonnet-5 · intent: troubleshooting</div>
+
+          <div class="c-grid">
+            <div class="c-stat"><span class="notch br"></span>
+              <div class="k">Confidence</div>
+              <div class="v">0.91<small>HIGH</small></div>
+              <div class="c-meter"><i></i><i></i><i></i></div>
+            </div>
+            <div class="c-warn"><div class="k">▲ Heads up</div>Customer mentions a second site. The draft only covers Columbus. Check before sending.</div>
+          </div>
+
+          <div class="c-lbl"><span>Sources · 4</span><span>score</span></div>
+          <table class="c-tbl">
+            <tr><td class="ty">TECHDOC</td><td class="nm"><b>KB-1142: VPN tunnel flaps after fw 7.2 ↗</b><span>§3 rollback procedure</span></td><td class="sc">0.91<i><u style="width:91%"></u></i></td></tr>
+            <tr><td class="ty">TICKET</td><td class="nm"><b>INC-47102: IPsec drops every 8h ↗</b><span>resolved · 12d ago</span></td><td class="sc">0.84<i><u style="width:84%"></u></i></td></tr>
+            <tr><td class="ty">TECHDOC</td><td class="nm"><b>KB-0987: Tunnel DPD timers ↗</b><span>§1 overview</span></td><td class="sc">0.72<i><u style="width:72%"></u></i></td></tr>
+            <tr><td class="ty">TICKET</td><td class="nm"><b>INC-46655: Edge failover loop ↗</b><span>resolved · 41d ago</span></td><td class="sc">0.61<i><u style="width:61%"></u></i></td></tr>
+          </table>
+
+          <div class="c-lbl"><span>Revise</span><span></span></div>
+          <div class="c-cmd"><span class="p">›</span><span class="grow">lead with the resolution, drop the last paragraph</span><span class="k">↵</span></div>
+          <div class="c-chips"><span class="c-chip">formal</span><span class="c-chip on">friendlier</span><span class="c-chip">shorter</span><span class="c-chip">detailed</span></div>
+        </div>
+        <div class="c-foot">
+          <span class="pill red"><svg width="16" height="16" style="color:#fff"><use href="#gl"/></svg>Apply changes</span>
+          <span class="pill line">Start over</span>
+          <span class="grow"></span>
+          <span class="m">human sends<br>nothing auto-sent</span>
+        </div>
+      </div>
+    </div>
+    <div class="tags"><span>Digital Pattern</span><span>JetBrains Mono</span><span>Signal Teal</span><span>dark</span><span>pipeline visible</span></div>
+  </div>
+</div>
+
+<div class="notes">
+  <div>
+    <h3>What each one is really choosing</h3>
+    <ul>
+      <li><b>A</b> gives up page space to stay out of the way. Best if analysts keep One Pane open all day.</li>
+      <li><b>B</b> takes almost no space. It depends on finding SMC's reply box reliably, which is still a guess in <code>smc-adapter.js</code>.</li>
+      <li><b>C</b> keeps today's floating card and puts the pipeline on screen. Good for trust and debugging, but it's the densest.</li>
+    </ul>
+  </div>
+  <div>
+    <h3>Color use</h3>
+    <p>Core Red is still the only action color in all three. Accents stay smaller than red, as the book requires. The open question is the High confidence color. A and B keep round 2's green, which isn't in the book. C tries Signal Teal, which is.</p>
+    <div class="sw">
+      <div><i style="background:#F20505"></i><span>Core Red</span></div>
+      <div><i style="background:linear-gradient(90deg,#F20505,#D30566)"></i><span>Core Gradient</span></div>
+      <div><i style="background:#F48C06"></i><span>Pulse Amber</span></div>
+      <div><i style="background:#2EB2B2"></i><span>Signal Teal</span></div>
+      <div><i style="background:#1F9D55"></i><span>green (off-book)</span></div>
+    </div>
+  </div>
+  <div>
+    <h3>Mix and match</h3>
+    <p>These parts are separable. Some combinations that work: A's rail with C's dark tokens and pipeline strip. B's strip as the collapsed state that opens into A. C's scored source table in any of them. Tell me what you like and don't like, and I'll turn the picks into a round 4 with the idle, Ask, loading and error states before implementing.</p>
+  </div>
+</div>
+
+</body>
+</html>

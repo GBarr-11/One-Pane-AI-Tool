@@ -7,7 +7,7 @@
  * break for different reasons (placement, transport, presentation) apart.
  */
 
-import { MARK_SVG } from './brand.js';
+import { GLYPH_SVG, SPARKLE_SVG } from './brand.js';
 
 const esc = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -53,9 +53,16 @@ const TONES = [
  * @param {object} handlers
  * @param {(opts: {tones: string[], instruction: string, previousDraft: string|null, replace: boolean}) => Promise<object>} handlers.onGenerate
  * @param {(question: string) => Promise<object>} handlers.onAsk
+ * @param {() => Promise<void>} handlers.onPolish
+ * @param {() => Promise<{label: string, instruction: string}[]>} handlers.onSuggest
+ * @param {() => void} [handlers.onDismiss] the analyst hit Start over - clears
+ *   this extension's memory of what it last wrote, so a subsequent Generate
+ *   replaces it rather than stacking underneath
  * @param {boolean} [handlers.askEnabled]
  */
-export function createPanelContent({ onGenerate, onAsk, onRecheck, askEnabled = true }) {
+export function createPanelContent({
+  onGenerate, onAsk, onPolish, onSuggest, onDismiss, onRecheck, askEnabled = true,
+}) {
   const element = document.createElement('div');
   element.className = 'panel';
 
@@ -69,8 +76,17 @@ export function createPanelContent({ onGenerate, onAsk, onRecheck, askEnabled = 
     question: '',
     tones: [],
     instruction: '',
+    /** "Suggest a next step" pills; [] until the analyst asks for them. */
+    suggestions: [],
+    suggestBusy: false,
+    /** Local to the suggest button - a failed suggestion should not blank
+     *  out the rest of the draft tab the way state.error does. */
+    suggestError: null,
     /** Set when the adapter could not find a ticket on this page. */
     noTicket: null,
+    polishBusy: false,
+    /** Brief confirmation flash after a successful polish. */
+    polished: false,
   };
 
   /* ---------------- rendering ---------------- */
@@ -104,7 +120,39 @@ export function createPanelContent({ onGenerate, onAsk, onRecheck, askEnabled = 
       <button class="primary" data-act="${action}" ${state.busy ? 'disabled' : ''}>
         ${state.busy
           ? `<span class="spinner"></span> ${action === 'revise' ? 'Revising…' : 'Generating…'}`
-          : `${MARK_SVG} ${esc(actionLabel)}`}
+          : `${GLYPH_SVG} ${esc(actionLabel)}`}
+      </button>`;
+  }
+
+  /**
+   * "Suggest a next step": an optional, analyst-initiated read on the ticket -
+   * not shown automatically, since answering it can be a real model call, not
+   * just local retrieval. Three states: not asked yet (a ghost trigger
+   * button), waiting on an answer, or 1-3 short-labeled pills once it has
+   * one, each a one-click shortcut to a full drafted reply in that direction.
+   */
+  function suggestSection() {
+    if (!state.suggestions.length) {
+      return `
+        <button class="ghost suggest-trigger" data-act="suggest" ${state.busy ? 'disabled' : ''}>
+          ${state.suggestBusy ? 'Thinking…' : 'Suggest a next step'}
+        </button>
+        ${state.suggestError
+          ? `<div class="hint" style="color:var(--op-danger-ink)">${esc(state.suggestError)}</div>`
+          : !state.suggestBusy
+            ? '<div class="hint">Not sure what to send? Reads this ticket and recommends a next step.</div>'
+            : ''}`;
+    }
+
+    return `
+      <div class="label">Suggested replies</div>
+      <div class="suggestions">
+        ${state.suggestions.map((s, i) => `
+          <button class="suggestion-pill" data-suggestion-index="${i}"
+                  ${state.busy ? 'disabled' : ''}>${esc(s.label)}</button>`).join('')}
+      </div>
+      <button class="ghost suggest-trigger" data-act="suggest" ${state.busy ? 'disabled' : ''}>
+        ${state.suggestBusy ? 'Thinking…' : 'Suggest again'}
       </button>`;
   }
 
@@ -146,6 +194,23 @@ export function createPanelContent({ onGenerate, onAsk, onRecheck, askEnabled = 
       </div>`;
   }
 
+  /**
+   * Cleans up whatever is currently in the reply box - a One Pane draft, the
+   * analyst's own typing, or a mix - rather than requiring a full regenerate.
+   * Independent of `state.result`: it reads the live page, not a stored draft,
+   * so it works even before Generate has ever been clicked.
+   */
+  function polishControl() {
+    return `
+      <button class="polish" data-act="polish" ${state.busy ? 'disabled' : ''}>
+        ${state.polishBusy ? '<span class="spinner"></span> Polishing…' : `${SPARKLE_SVG} Polish`}
+      </button>
+      <div class="hint">
+        ${state.polished ? '✓ Polished. ' : ''}Cleans up grammar and formatting on whatever is
+        currently in the reply box.
+      </div>`;
+  }
+
   function draftTab() {
     if (state.noTicket) return noTicketView(state.noTicket);
 
@@ -159,11 +224,15 @@ export function createPanelContent({ onGenerate, onAsk, onRecheck, askEnabled = 
 
     return `
       <div class="sub">
-        Reads this ticket's notes, the internal techdocs, and similar resolved
-        tickets before drafting a reply.
+        Reads this ticket's notes and the internal techdocs before drafting
+        a reply.
       </div>
       ${steeringControls('Generate reply', 'generate')}
-      <div class="hint">Drafts into the reply box.<br>Nothing is sent automatically.</div>`;
+      ${suggestSection()}
+      <div class="hint">Drafts into the reply box.<br>Nothing is sent automatically.</div>
+
+      <div class="label">Polish</div>
+      ${polishControl()}`;
   }
 
   function draftResult(r) {
@@ -176,17 +245,20 @@ export function createPanelContent({ onGenerate, onAsk, onRecheck, askEnabled = 
     const linksOff = r.links && !r.links.tickets && !r.links.techdocs;
 
     return `
-      <div class="status ok">✓ ${r.revised ? 'Revised draft written to the reply box' : 'Draft inserted into the reply box'}</div>
+      <div class="status ok"><span class="ck">✓</span>${r.revised ? 'Revised draft written to the reply box' : 'Draft inserted into the reply box'}</div>
 
       ${r.instructionApplied === false ? `
         <div class="heads-up">
           <strong>Instruction not applied</strong>
           The offline generator can only apply the tone presets. Run the server with
-          <code>ONEPANE_PROVIDER=claude</code> for free-text changes.
+          <code>ONEPANE_PROVIDER=openwebui</code> (or <code>claude</code>) for free-text changes.
         </div>` : ''}
 
       <div class="label">Confidence</div>
-      <span class="pill ${esc(level)}"><span class="dot"></span>${CONFIDENCE_LABEL[level] || esc(level)} — ${esc(detail)}</span>
+      <div class="conf">
+        <span class="meter ${esc(level)}" aria-hidden="true"><i></i><i></i><i></i></span>
+        ${CONFIDENCE_LABEL[level] || esc(level)} <small>— ${esc(detail)}</small>
+      </div>
 
       ${(c.reasons || []).length ? `
         <div class="heads-up">
@@ -207,9 +279,11 @@ export function createPanelContent({ onGenerate, onAsk, onRecheck, askEnabled = 
           Sources link out once <code>SMC_BASE_URL</code> and <code>ONEPANE_KB_BASE_URL</code> are set.
         </div>` : ''}
 
+      <div class="label">Polish</div>
+      ${polishControl()}
+
       <div class="actions">
-        <button class="ghost" data-act="generate">Start over</button>
-        <button class="ghost" data-act="dismiss">Dismiss</button>
+        <button class="ghost" data-act="dismiss">Start over</button>
       </div>
       <div class="meta">
         ${esc(r.provider)}${r.model ? ` · ${esc(r.model)}` : ''} · ${esc(r.elapsedMs)}ms · intent: ${esc(r.intent)}
@@ -227,7 +301,7 @@ export function createPanelContent({ onGenerate, onAsk, onRecheck, askEnabled = 
     return `
       <div class="source">
         <div>
-          <div class="tag">${esc(SOURCE_TAG[s.kind] || s.kind)}</div>
+          <div class="tag kind">${esc(SOURCE_TAG[s.kind] || s.kind)}</div>
           ${url
             ? `<a class="name" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${name}</a>`
             : `<div class="name">${name}</div>`}
@@ -240,10 +314,10 @@ export function createPanelContent({ onGenerate, onAsk, onRecheck, askEnabled = 
   function askTab() {
     return `
       <div class="sub">
-        Ask about tickets, alerts, or platform state. Read-only — this never
-        changes anything in SMC.
+        Ask about this ticket — its thread and metadata only, nothing else in
+        SMC. Read-only — this never changes anything.
       </div>
-      <textarea data-el="question" placeholder="e.g. Any other open tickets for this client?"
+      <textarea data-el="question" placeholder="e.g. Summarize what's happened on this ticket so far"
                 ${state.busy ? 'disabled' : ''}>${esc(state.question)}</textarea>
       <button class="primary" data-act="ask" ${state.busy ? 'disabled' : ''}>
         ${state.busy ? '<span class="spinner"></span> Asking…' : 'Ask'}
@@ -307,9 +381,18 @@ export function createPanelContent({ onGenerate, onAsk, onRecheck, askEnabled = 
     const answer = element.querySelector('[data-el="answer"]');
     if (answer && state.answer) answer.textContent = state.answer.response || '';
 
-    const actions = { generate, revise, ask, dismiss, copyDiagnostics, recheck };
+    const actions = {
+      generate, revise, ask, polish, suggest, dismiss, copyDiagnostics, recheck,
+    };
     element.querySelectorAll('[data-act]').forEach((btn) => {
       btn.onclick = actions[btn.dataset.act];
+    });
+
+    element.querySelectorAll('[data-suggestion-index]').forEach((btn) => {
+      btn.onclick = () => {
+        const s = state.suggestions[Number(btn.dataset.suggestionIndex)];
+        if (s) useSuggestion(s.instruction);
+      };
     });
   }
 
@@ -349,6 +432,37 @@ export function createPanelContent({ onGenerate, onAsk, onRecheck, askEnabled = 
   const generate = () => run();
   const revise = () => run({ revise: true });
 
+  /**
+   * A "Suggest a next step" pill was clicked - populate the same free-text
+   * steering box the analyst could have typed into themselves (visible and
+   * still editable in the result view) and generate immediately, the same
+   * one-click-to-a-full-draft behavior as before.
+   */
+  function useSuggestion(instruction) {
+    state.instruction = instruction;
+    run();
+  }
+
+  /** "Suggest a next step" / "Suggest again" - always a fresh ask, never cached. */
+  async function suggest() {
+    if (state.busy) return;
+
+    state.busy = true;
+    state.suggestBusy = true;
+    state.suggestError = null;
+    render();
+
+    try {
+      state.suggestions = await onSuggest();
+    } catch (err) {
+      state.suggestError = err.message;
+    } finally {
+      state.busy = false;
+      state.suggestBusy = false;
+      render();
+    }
+  }
+
   async function ask() {
     const question = state.question.trim();
     if (!question || state.busy) return;
@@ -368,9 +482,44 @@ export function createPanelContent({ onGenerate, onAsk, onRecheck, askEnabled = 
     }
   }
 
+  /**
+   * Back to square one: not just hiding the result, but resetting the tone
+   * and instruction steering too, since a leftover "shorter" toggle or a
+   * suggestion's instruction still sitting in the box would quietly carry
+   * into the next draft otherwise. `onDismiss` clears this extension's own
+   * memory of what it wrote, so a later Generate replaces the reply box
+   * instead of stacking underneath a draft the panel no longer knows about.
+   */
   function dismiss() {
     state.result = null;
+    state.tones = [];
+    state.instruction = '';
+    onDismiss?.();
     render();
+  }
+
+  async function polish() {
+    if (state.busy) return;
+
+    state.busy = true;
+    state.polishBusy = true;
+    state.error = null;
+    state.polished = false;
+    render();
+
+    try {
+      await onPolish();
+      state.polished = true;
+      // A brief confirmation rather than a persistent one - the reply box
+      // itself is the real evidence this worked.
+      setTimeout(() => { state.polished = false; render(); }, 2400);
+    } catch (err) {
+      state.error = err.message;
+    } finally {
+      state.busy = false;
+      state.polishBusy = false;
+      render();
+    }
   }
 
   async function copyDiagnostics() {
@@ -422,6 +571,11 @@ export function createPanelContent({ onGenerate, onAsk, onRecheck, askEnabled = 
       state.error = null;
       state.answer = null;
       state.instruction = '';
+      // Stale suggestions for the previous ticket would be actively
+      // misleading; the analyst re-asks for the new ticket's with the button.
+      state.suggestions = [];
+      state.suggestBusy = false;
+      state.suggestError = null;
       // Tone preferences are a working style, not a property of one ticket, so
       // they deliberately survive the switch.
       render();
