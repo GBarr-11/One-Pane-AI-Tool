@@ -12,11 +12,31 @@ import {
 } from './smc-adapter.js';
 import { createOverlay } from '../panel/overlay.js';
 import { createPanelContent } from '../panel/panel.js';
-import { MSG, sendToBackground } from '../shared/messages.js';
+import {
+  MSG, sendToBackground, extensionAlive, isContextInvalidated,
+} from '../shared/messages.js';
 import { loadConfig, saveConfig, loadOverlayState, saveOverlayState } from '../shared/config.js';
 
 /** Re-injection guard: SPA navigation can run a content script more than once. */
 const MOUNT_FLAG = '__onePaneMounted';
+
+/**
+ * Run a fire-and-forget storage save from an overlay callback.
+ *
+ * After the extension is reloaded, this tab's content script is orphaned and
+ * every `chrome.*` call throws. Nothing awaits these saves, so each drag,
+ * resize, or theme click used to log "Uncaught (in promise) Error: Extension
+ * context invalidated". Skip the save when disconnected, swallow that one
+ * error, and warn on anything else rather than hiding it.
+ */
+function persist(save) {
+  if (!extensionAlive()) return;
+  Promise.resolve()
+    .then(save)
+    .catch((err) => {
+      if (!isContextInvalidated(err)) console.warn('One Pane: could not save a setting', err);
+    });
+}
 
 async function main() {
   if (window[MOUNT_FLAG]) return;
@@ -138,13 +158,13 @@ async function main() {
       launcherX: saved.launcherX,
     },
     onLayoutChange: ({ width, height, position, launcherX }) =>
-      saveOverlayState({ width, height, position, launcherX }),
+      persist(() => saveOverlayState({ width, height, position, launcherX })),
     onOpenChange: (open) => {
-      saveOverlayState({ open });
+      persist(() => saveOverlayState({ open }));
       if (open && config.autoDraft) content.generate();
     },
     // A preference, not a placement - it follows the analyst between machines.
-    onThemeChange: (theme) => saveConfig({ theme }),
+    onThemeChange: (theme) => persist(() => saveConfig({ theme })),
   });
 
   overlay.mount();
