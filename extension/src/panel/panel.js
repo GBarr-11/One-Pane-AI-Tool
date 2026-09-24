@@ -319,8 +319,8 @@ export function createPanelContent({
   function askTab() {
     return `
       <div class="sub">
-        Ask about this ticket — its thread and metadata only, nothing else in
-        SMC. Read-only — this never changes anything.
+        Ask about this ticket — answered from its thread and the matching
+        Confluence SOPs, nothing else in SMC. Read-only — this never changes anything.
       </div>
       <textarea data-el="question" placeholder="e.g. Summarize what's happened on this ticket so far"
                 ${state.busy ? 'disabled' : ''}>${esc(state.question)}</textarea>
@@ -333,6 +333,9 @@ export function createPanelContent({
       ${state.answer ? `
         <div class="label">Answer</div>
         <div class="answer" data-el="answer"></div>
+        ${(state.answer.sources || []).length ? `
+          <div class="label">Sources used</div>
+          ${state.answer.sources.map(sourceRow).join('')}` : ''}
         ${(state.answer.citations || []).length ? `
           <div class="citations">
             <strong>Sources</strong>

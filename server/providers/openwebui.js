@@ -203,7 +203,7 @@ async function suggest({ ctx, docs, precedent, confidence }) {
 }
 
 /** Same transport as `generate()`, the Q&A prompt instead of the drafting one. */
-async function answer({ ctx, question }) {
+async function answer({ ctx, question, docs = [] }) {
   const { baseUrl, apiKey, model } = config();
 
   let res;
@@ -219,7 +219,7 @@ async function answer({ ctx, question }) {
         stream: false,
         messages: [
           { role: 'system', content: ASK_SYSTEM_PROMPT },
-          { role: 'user', content: buildAskMessage(ctx, question) },
+          { role: 'user', content: buildAskMessage(ctx, question, docs) },
         ],
       }),
       signal: AbortSignal.timeout(TIMEOUT_MS),

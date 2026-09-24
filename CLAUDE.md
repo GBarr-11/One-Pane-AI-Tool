@@ -67,10 +67,19 @@ read-only client and a ticket-to-SOP search against
 `expedient-cloud.atlassian.net`. `server/knowledge.js` picks the techdoc source
 (`ONEPANE_KB_SOURCE`: auto/confluence, plus mock inside onepane-mock). In
 production, auto without Confluence is `none`, and it never mixes mock techdocs
-with real pages. It has been tested only against a faked `fetch`. Real CQL
-`siteSearch` behaviour and the v2 `include-labels` response have not been
-checked against the live tenant yet. Cole's system also reads Confluence, so
+with real pages. "TechDocs" is the team's name for this Confluence
+(https://expedient-cloud.atlassian.net/wiki/home). The SOPs, MOPs, and KBs
+live in spaces TO, PRE, and IKB. Cole's system also reads Confluence, so
 coordinate on the credential.
+
+**Verified against the live tenant (2026-09-24).** The first live run found
+the original `siteSearch` design returning the same off-topic pages for every
+query, which left every draft with zero SOPs. `search.js` now runs several small
+queries anchored on title prefixes, pre-ranks, and fetches the top 8. The
+reasons are in the README's "How it works". The v2 page fetch works as coded.
+Drafts **and** the Ask tab (`server/ask.js`) are grounded. Weak spot: topics
+the wiki barely covers, e.g. a Cohesity VM restore, still surface the nearest
+generic "restore" SOP, and confidence stays medium.
 
 **SMC ticket history: shelved (2026-09-23).** Searching real closed SMC tickets
 as precedent, plus a "Find similar tickets" button in the Ask tab, was built and
@@ -80,14 +89,14 @@ and what to fix are in `FUTURE_FEATURES.md`; the code is kept, unloaded, in
 `docs/future/ticket-history/`. Its requires still point at the old `data/`
 path and would need repointing to `onepane-mock/data/` if revived. What stayed
 live: only mock tickets get mock precedent (`server/knowledge.js`), so a live ticket is never handed invented
-resolved tickets. The Ask tab stays and answers about the open ticket only,
-until it is pointed at Cole's `/api/query`. The v3 spec is saved at
+resolved tickets. The Ask tab stays and answers from the open ticket and its
+matching Confluence SOPs, until it is pointed at Cole's `/api/query`. The v3 spec is saved at
 `docs/smc-api/openapi-v3.json`.
 
 `onepane-mock/smc-console/` is a stand-in for the SMC ticket view, mounted at
 `/mock-smc/`. It is the host page the overlay is tested against, and the
 extension's localhost match is narrowed to that path so the overlay never
-injects into the Control Center. `test/run-tests.js` is 96 dependency-free
+injects into the Control Center. `test/run-tests.js` is 102 dependency-free
 tests. It installs the mock pack for fixtures, and its "production mode" group
 uninstalls it.
 
