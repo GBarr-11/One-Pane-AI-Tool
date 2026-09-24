@@ -3,8 +3,10 @@
 /**
  * Real draft generation via the Claude API.
  *
- * Activated by setting ONEPANE_PROVIDER=claude with credentials available
- * (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or an `ant auth login` profile).
+ * Activated by setting ONEPANE_PROVIDER=claude. The key is the caller's, via
+ * credentials.js (see `makeClient` below): a key sent with the request, else in
+ * server mode whatever the SDK finds itself (ANTHROPIC_API_KEY,
+ * ANTHROPIC_AUTH_TOKEN, or an `ant auth login` profile).
  * The SDK is required lazily so the server still runs with zero installs
  * when another provider is in use.
  *
@@ -14,8 +16,24 @@
 
 const { sanitizeHtml } = require('../sanitize');
 const { directivesFor } = require('../tones');
+const credentials = require('../credentials');
 
 const MODEL = process.env.ONEPANE_MODEL || 'claude-opus-5';
+
+/**
+ * An SDK client spending the right person's key.
+ *
+ * The key is always passed explicitly when there is one to pass, because
+ * `new Anthropic()` with no key reads ANTHROPIC_API_KEY and the login profile
+ * on its own - which in per-user mode would be the server operator's. So
+ * per-user mode with no caller key refuses here, before the SDK can look.
+ */
+function makeClient(Anthropic) {
+  const apiKey = credentials.get('anthropicKey');
+  if (apiKey) return new Anthropic({ apiKey });
+  if (credentials.mode() === 'per-user') throw new Error(credentials.missingMessage('anthropicKey'));
+  return new Anthropic();
+}
 
 /**
  * Frozen instruction block. Kept byte-stable so it can be cached across
@@ -238,7 +256,7 @@ async function polish({ text }) {
     );
   }
 
-  const client = new Anthropic();
+  const client = makeClient(Anthropic);
 
   let response;
   try {
@@ -250,7 +268,7 @@ async function polish({ text }) {
     });
   } catch (error) {
     if (error instanceof Anthropic.AuthenticationError) {
-      throw new Error('Claude API authentication failed - check ANTHROPIC_API_KEY or run `ant auth login`.');
+      throw new Error(credentials.rejectedMessage('anthropicKey', 'The Claude API'));
     }
     if (error instanceof Anthropic.RateLimitError) {
       throw new Error('Claude API rate limited - retry in a moment.');
@@ -409,7 +427,7 @@ async function suggest({ ctx, docs, precedent, confidence }) {
     );
   }
 
-  const client = new Anthropic();
+  const client = makeClient(Anthropic);
 
   let response;
   try {
@@ -421,7 +439,7 @@ async function suggest({ ctx, docs, precedent, confidence }) {
     });
   } catch (error) {
     if (error instanceof Anthropic.AuthenticationError) {
-      throw new Error('Claude API authentication failed - check ANTHROPIC_API_KEY or run `ant auth login`.');
+      throw new Error(credentials.rejectedMessage('anthropicKey', 'The Claude API'));
     }
     if (error instanceof Anthropic.RateLimitError) {
       throw new Error('Claude API rate limited - retry in a moment.');
@@ -458,7 +476,7 @@ async function answer({ ctx, question }) {
     );
   }
 
-  const client = new Anthropic();
+  const client = makeClient(Anthropic);
 
   let response;
   try {
@@ -470,7 +488,7 @@ async function answer({ ctx, question }) {
     });
   } catch (error) {
     if (error instanceof Anthropic.AuthenticationError) {
-      throw new Error('Claude API authentication failed - check ANTHROPIC_API_KEY or run `ant auth login`.');
+      throw new Error(credentials.rejectedMessage('anthropicKey', 'The Claude API'));
     }
     if (error instanceof Anthropic.RateLimitError) {
       throw new Error('Claude API rate limited - retry in a moment.');
@@ -516,7 +534,7 @@ async function generate({
     );
   }
 
-  const client = new Anthropic();
+  const client = makeClient(Anthropic);
 
   let response;
   try {
@@ -537,7 +555,7 @@ async function generate({
     });
   } catch (error) {
     if (error instanceof Anthropic.AuthenticationError) {
-      throw new Error('Claude API authentication failed - check ANTHROPIC_API_KEY or run `ant auth login`.');
+      throw new Error(credentials.rejectedMessage('anthropicKey', 'The Claude API'));
     }
     if (error instanceof Anthropic.RateLimitError) {
       throw new Error('Claude API rate limited - retry in a moment.');

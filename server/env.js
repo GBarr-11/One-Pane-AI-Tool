@@ -19,7 +19,9 @@
 const fs = require('fs');
 const path = require('path');
 
-const ENV_PATH = path.join(__dirname, '..', '.env');
+// ONEPANE_ENV_FILE points elsewhere - the test suite uses it to start the real
+// server without the developer's live keys in `.env`.
+const ENV_PATH = process.env.ONEPANE_ENV_FILE || path.join(__dirname, '..', '.env');
 
 /**
  * Strip one matched pair of surrounding quotes.

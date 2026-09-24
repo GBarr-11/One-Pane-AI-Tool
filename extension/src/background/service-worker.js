@@ -7,7 +7,9 @@
  * Allow-Origin` just to be reachable from a ticket page.
  */
 
-import { loadConfig } from '../shared/config.js';
+import {
+  loadConfig, loadCredentials, CREDENTIAL_HEADERS, credentialsAllowedFor,
+} from '../shared/config.js';
 import { MSG } from '../shared/messages.js';
 
 /** Fail loudly rather than leaving the panel spinning on a hung backend. */
@@ -50,6 +52,35 @@ async function requestJson(url, options = {}) {
 }
 
 /**
+ * A request to the One Pane backend, carrying the analyst's own credentials.
+ *
+ * Only this backend gets them - never AI CTRL, which has its own auth. And
+ * only over HTTPS or to this machine's loopback: the check happens here,
+ * before anything is sent, so a mistyped `http://` backend never sees a key.
+ *
+ * @param {string} path  e.g. `/api/generate`
+ * @param {object} [options]  fetch options
+ */
+async function onePaneRequest(path, options = {}) {
+  const { backends } = await loadConfig();
+  const creds = await loadCredentials();
+  const headers = {};
+  for (const [name, header] of Object.entries(CREDENTIAL_HEADERS)) {
+    if (creds[name]) headers[header] = creds[name];
+  }
+
+  if (Object.keys(headers).length && !credentialsAllowedFor(backends.onePane)) {
+    throw new Error(`Not sending your credentials to ${backends.onePane} - it is not HTTPS. `
+      + 'Use an https:// backend URL in One Pane settings (http is only allowed for localhost).');
+  }
+
+  return requestJson(`${backends.onePane}${path}`, {
+    ...options,
+    headers: { ...(options.headers || {}), ...headers },
+  });
+}
+
+/**
  * Draft a reply for a ticket scraped out of the page.
  *
  * `ticket` carries the DOM-extracted ticket so the backend can draft for a
@@ -66,8 +97,7 @@ async function requestJson(url, options = {}) {
  *   instruction?: string, previousDraft?: string|null}} payload
  */
 async function generateDraft(payload) {
-  const { backends } = await loadConfig();
-  return requestJson(`${backends.onePane}/api/generate`, {
+  return onePaneRequest('/api/generate', {
     method: 'POST',
     body: JSON.stringify({
       ticketId: payload.ticketId,
@@ -89,8 +119,7 @@ async function generateDraft(payload) {
  * @param {{ticketId: string, ticket: object}} payload
  */
 async function getSuggestions(payload) {
-  const { backends } = await loadConfig();
-  return requestJson(`${backends.onePane}/api/suggestions`, {
+  return onePaneRequest('/api/suggestions', {
     method: 'POST',
     body: JSON.stringify({
       ticketId: payload.ticketId,
@@ -112,8 +141,7 @@ async function getSuggestions(payload) {
  * @param {{ticketId: string, ticket: object, question: string}} payload
  */
 async function askQuestion(payload) {
-  const { backends } = await loadConfig();
-  return requestJson(`${backends.onePane}/api/ask`, {
+  return onePaneRequest('/api/ask', {
     method: 'POST',
     body: JSON.stringify({
       ticketId: payload.ticketId,
@@ -130,8 +158,7 @@ async function askQuestion(payload) {
  * @param {{text: string}} payload
  */
 async function polishText(payload) {
-  const { backends } = await loadConfig();
-  return requestJson(`${backends.onePane}/api/polish`, {
+  return onePaneRequest('/api/polish', {
     method: 'POST',
     body: JSON.stringify({ text: payload.text }),
   });
@@ -152,12 +179,21 @@ async function health() {
   };
 }
 
+/**
+ * The settings page's "Test" button: asks the backend to try each stored
+ * credential against its service. Reports accepted / rejected / not set.
+ */
+async function checkCredentials() {
+  return onePaneRequest('/api/credentials/check');
+}
+
 const HANDLERS = {
   [MSG.GENERATE_DRAFT]: generateDraft,
   [MSG.ASK_AI_CTRL]: askQuestion,
   [MSG.POLISH_TEXT]: polishText,
   [MSG.GET_SUGGESTIONS]: getSuggestions,
   [MSG.HEALTH]: health,
+  [MSG.CHECK_CREDENTIALS]: checkCredentials,
 };
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

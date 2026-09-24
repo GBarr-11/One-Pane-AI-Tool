@@ -87,7 +87,7 @@ until it is pointed at Cole's `/api/query`. The v3 spec is saved at
 `onepane-mock/smc-console/` is a stand-in for the SMC ticket view, mounted at
 `/mock-smc/`. It is the host page the overlay is tested against, and the
 extension's localhost match is narrowed to that path so the overlay never
-injects into the Control Center. `test/run-tests.js` is 84 dependency-free
+injects into the Control Center. `test/run-tests.js` is 96 dependency-free
 tests. It installs the mock pack for fixtures, and its "production mode" group
 uninstalls it.
 
@@ -97,9 +97,11 @@ uninstalls it.
   tickets, notes, contacts, and assets via v3 (GET only), and `server/env.js` loads `.env`. v3 tokens are short-lived and
   per-person, so a pasted token is a test credential, not a deployment story.
 - **`server/` has no authentication.** It accepts an arbitrary `ticket` JSON blob
-  from any caller and, under `ONEPANE_PROVIDER=claude`, turns it into a model
-  call. Fine on localhost; an unauthenticated proxy to the API key anywhere
-  else. No per-user budget cap either (Cole's side already has one).
+  from any caller and turns it into a model call. In the default `server`
+  credential mode that is an unauthenticated proxy to the `.env` keys, so run
+  anything reachable by others with `ONEPANE_CREDENTIALS=per-user` (callers then
+  spend only their own keys - see Secrets). The WorkOS login gate is still to
+  come with deployment. No per-user budget cap either (Cole's side already has one).
 - **Every SMC field selector is a guess.** The extension's ticket-id detection
   and reply-box fallback are exercised against the mock console, but subject,
   client, severity, and note classification have never seen the real DOM.
@@ -188,14 +190,30 @@ SMC API access, real auth, and to not step on each other.
 
 ## Secrets
 
-`.env` is gitignored (`.env`, `.env.*`, with `!.env.example` re-included). Real
-credentials go in `.env` — never in code, never in the extension, never in
-anything the extension sends. `.env.example` is the documented template; keep it
+`.env` is gitignored (`.env`, `.env.*`, with `!.env.example` re-included).
+Credentials never go in code. `.env.example` is the documented template; keep it
 in sync when adding a variable, with the value left blank.
 
+**Per-user credentials (added 2026-09-24).** Upstream keys (Open WebUI, SMC,
+Confluence, Anthropic) belong to the analyst, not the server, once anyone else
+can reach it. Every one is read through `server/credentials.js` (`get()`), never
+from `process.env` directly — keep it that way for any new upstream.
+`ONEPANE_CREDENTIALS=per-user` ignores `.env` secrets entirely; each request
+carries the caller's own keys in `X-OnePane-*` headers, set by the extension's
+service worker from `chrome.storage.local` (options page → "Your credentials").
+They live in an AsyncLocalStorage for that one request and are never logged or
+returned. The default `server` mode uses `.env`, with a caller's own key winning.
+The only `.env` secret per-user mode will use is an opt-in shared Confluence
+service account (`CONFLUENCE_SHARED_ACCOUNT=true`), and never paired with half a
+caller's credential. Keys only travel over HTTPS or loopback: the extension
+refuses to send otherwise, and the server rejects credential headers that
+arrived over plain HTTP from off-host (`X-Forwarded-Proto` must be `https`).
+The WorkOS app login gate is separate and comes with deployment.
+
 `server/env.js` loads `.env` at server start (it is the first require in
-`server/server.js`). The test suite does not load it, so tests never touch live
-services.
+`server/server.js`). The test suite does not load it (it points
+`ONEPANE_ENV_FILE` at a missing file before starting the server), so tests never
+touch live services.
 
 ## Source docs (Grant has these, not checked into this repo)
 

@@ -13,13 +13,17 @@
  * prompt, trust-boundary fencing, and steering rules are the product; the
  * transport is not.
  *
- * Config comes from `.env` (gitignored), never from the caller:
+ * The gateway and model come from `.env` (gitignored), never from the caller:
  *   OWUI_URL       Open WebUI host plus `/api`, no trailing slash
- *   OWUI_API_KEY   sent as `Authorization: Bearer ...`; never logged or echoed
  *   ONEPANE_MODEL  optional override; a model ID from `GET {OWUI_URL}/models`
+ *
+ * The API key is the caller's, via credentials.js: the key sent with this
+ * request, or OWUI_API_KEY from `.env` in server mode only. Sent as
+ * `Authorization: Bearer ...`; never logged or echoed.
  */
 
 const { sanitizeHtml } = require('../sanitize');
+const credentials = require('../credentials');
 const {
   SYSTEM_PROMPT, buildUserMessage, buildRevisionMessage,
   ASK_SYSTEM_PROMPT, buildAskMessage,
@@ -35,15 +39,11 @@ const DEFAULT_MODEL = 'gpt-5.6-luna';
 
 function config() {
   const baseUrl = (process.env.OWUI_URL || '').trim().replace(/\/+$/, '');
-  const apiKey = (process.env.OWUI_API_KEY || '').trim();
+  const apiKey = credentials.get('owuiKey');
   const model = (process.env.ONEPANE_MODEL || '').trim() || DEFAULT_MODEL;
 
-  const missing = [];
-  if (!baseUrl) missing.push('OWUI_URL');
-  if (!apiKey) missing.push('OWUI_API_KEY');
-  if (missing.length) {
-    throw new Error(`The openwebui provider needs ${missing.join(', ')} set in .env - see .env.example.`);
-  }
+  if (!baseUrl) throw new Error('The openwebui provider needs OWUI_URL set on the server - see .env.example.');
+  if (!apiKey) throw new Error(credentials.missingMessage('owuiKey'));
   return { baseUrl, apiKey, model };
 }
 
@@ -102,7 +102,7 @@ async function generate({
   }
 
   if (res.status === 401 || res.status === 403) {
-    throw new Error('Open WebUI rejected the API key - check OWUI_API_KEY.');
+    throw new Error(credentials.rejectedMessage('owuiKey', 'Open WebUI'));
   }
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);
@@ -177,7 +177,7 @@ async function suggest({ ctx, docs, precedent, confidence }) {
   }
 
   if (res.status === 401 || res.status === 403) {
-    throw new Error('Open WebUI rejected the API key - check OWUI_API_KEY.');
+    throw new Error(credentials.rejectedMessage('owuiKey', 'Open WebUI'));
   }
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);
@@ -232,7 +232,7 @@ async function answer({ ctx, question }) {
   }
 
   if (res.status === 401 || res.status === 403) {
-    throw new Error('Open WebUI rejected the API key - check OWUI_API_KEY.');
+    throw new Error(credentials.rejectedMessage('owuiKey', 'Open WebUI'));
   }
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);
@@ -295,7 +295,7 @@ async function polish({ text }) {
   }
 
   if (res.status === 401 || res.status === 403) {
-    throw new Error('Open WebUI rejected the API key - check OWUI_API_KEY.');
+    throw new Error(credentials.rejectedMessage('owuiKey', 'Open WebUI'));
   }
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);

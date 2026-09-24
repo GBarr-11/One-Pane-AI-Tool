@@ -11,9 +11,11 @@
  *   CONFLUENCE_EMAIL      the account the token belongs to
  *   CONFLUENCE_API_TOKEN  from id.atlassian.com -> Security -> API tokens
  *
- * A token reads everything its owner can read. Every analyst using One Pane
- * sees what that token sees, so it should belong to a service account scoped to
- * the SOP spaces, not to a person with access to restricted pages.
+ * Normally each analyst sends their own pair from the extension, so a search
+ * sees exactly what that analyst could see in the wiki. The opt-in shared
+ * account (CONFLUENCE_SHARED_ACCOUNT=true) is different: every analyst sees what
+ * IT sees, so it must be a service account scoped to the SOP spaces, never a
+ * person with access to restricted pages.
  *
  * TWO HOSTS, depending on the token type:
  *   classic token -> https://<site>.atlassian.net/wiki/...
@@ -22,6 +24,8 @@
  * always use the site URL either way.
  */
 
+const credentials = require('../credentials');
+
 const REQUEST_TIMEOUT_MS = 15_000;
 
 /** Hardcoded on purpose. See the invariant above. */
@@ -29,7 +33,11 @@ const METHOD = 'GET';
 
 const trimSlashes = (value) => String(value || '').trim().replace(/\/+$/, '');
 
-/** Read at call time so the health endpoint reflects a fix without a restart. */
+/**
+ * Read at call time so the health endpoint reflects a fix without a restart,
+ * and because the email/token pair is per caller (credentials.js): the pair sent
+ * with this request, else .env in server mode, else the opt-in shared account.
+ */
 function config() {
   // Tolerate a pasted `.../wiki` or `.../wiki/home` - the paths below add it.
   const siteUrl = trimSlashes(process.env.CONFLUENCE_SITE_URL).replace(/\/wiki(\/.*)?$/, '');
@@ -38,8 +46,8 @@ function config() {
     siteUrl,
     cloudId,
     apiBase: cloudId ? `https://api.atlassian.com/ex/confluence/${encodeURIComponent(cloudId)}` : siteUrl,
-    email: String(process.env.CONFLUENCE_EMAIL || '').trim(),
-    token: String(process.env.CONFLUENCE_API_TOKEN || '').trim(),
+    email: credentials.get('confluenceEmail'),
+    token: credentials.get('confluenceToken'),
   };
 }
 
@@ -104,7 +112,9 @@ function resolveUrl(pathname, query) {
  */
 async function confluenceGet(pathname, query) {
   const auth = authHeader();
-  if (!auth) throw new Error('CONFLUENCE_EMAIL and CONFLUENCE_API_TOKEN must be set - see .env.example');
+  if (!auth) {
+    throw new Error(credentials.missingMessage(config().email ? 'confluenceToken' : 'confluenceEmail'));
+  }
 
   const url = resolveUrl(pathname, query);
   const controller = new AbortController();
@@ -135,8 +145,11 @@ async function confluenceGet(pathname, query) {
   }
 
   if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error(`Confluence 401: ${credentials.rejectedMessage('confluenceToken', 'Confluence')} `
+        + '(The email must be the account the token belongs to; a scoped token also needs CONFLUENCE_CLOUD_ID on the server.)');
+    }
     const hint = {
-      401: ' - CONFLUENCE_EMAIL / CONFLUENCE_API_TOKEN rejected (a scoped token also needs CONFLUENCE_CLOUD_ID)',
       403: ' - the token is valid but lacks permission or scope for this endpoint',
       404: ' - not found, or not visible to this account',
     }[res.status] || '';

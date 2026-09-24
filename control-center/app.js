@@ -86,22 +86,34 @@ const PROVIDER_LABEL = {
 // --------------------------------------------------------------------------
 // Component state: one place decides what "ready" means for each part.
 
+/** In per-user mode, the key fact is where keys come from, not whether this page sent one. */
+function perUserKey(s) {
+  return s.credentials && s.credentials.mode === 'per-user' ? 'each analyst’s own, from the extension' : null;
+}
+
 function components(s) {
   const p = s.provider;
   const kb = s.knowledgeBase;
   const pp = state.probes.provider;
   const cp = state.probes.confluence;
   const mock = s.mode.kind === 'mock';
+  // Per-user mode: the server holds no keys by design, and this page sends
+  // none, so "no key" here is the correct state rather than a fault.
+  const perUser = s.credentials && s.credentials.mode === 'per-user';
+  const PER_USER = { level: 'info', label: 'Per-user keys' };
 
   const provider = (() => {
     if (p.active === 'none') return { level: 'bad', label: 'Not configured' };
     if (p.active === 'mock') return { level: 'info', label: 'Offline mock' };
+    if (perUser) return p.active !== 'openwebui' || p.openwebui.gatewayHost ? PER_USER : { level: 'bad', label: 'No gateway' };
     if (!pp) return { level: 'info', label: 'Checking…' };
     if (pp.ok && pp.modelListed === false) return { level: 'warn', label: 'Model not listed' };
     return pp.ok ? { level: 'good', label: 'Ready' } : { level: 'bad', label: 'Unreachable' };
   })();
 
+  const confluenceSite = Boolean(kb.confluence.siteUrl);
   const knowledge = (() => {
+    if (perUser && confluenceSite && !kb.confluence.configured) return PER_USER;
     if (kb.source === 'none') return { level: 'warn', label: 'Not configured' };
     if (kb.source === 'mock') return { level: 'info', label: 'Mock corpus' };
     if (!kb.confluence.configured) return { level: 'bad', label: 'Selected, not configured' };
@@ -109,14 +121,14 @@ function components(s) {
     return cp.ok ? { level: 'good', label: 'Ready' } : { level: 'bad', label: 'Failing' };
   })();
 
-  const confluenceNode = kb.confluence.configured
+  const confluenceNode = perUser && confluenceSite && !kb.confluence.configured ? PER_USER : kb.confluence.configured
     ? (cp ? (cp.ok ? { level: 'good', label: 'Ready' } : { level: 'bad', label: 'Failing' }) : { level: 'info', label: 'Checking…' })
     : { level: 'warn', label: 'Not configured' };
 
   // Set is not the same as working: v3 tokens expire in about 4 hours, and
   // there is no free probe that does not fetch a real ticket. So a configured
   // SMC stays neutral until Diagnostics proves a ticket actually comes back.
-  const smc = s.smc.configured
+  const smc = perUser && s.smc.baseUrl ? PER_USER : s.smc.configured
     ? { level: 'info', label: 'Configured, unverified' }
     : { level: 'warn', label: 'Not configured' };
 
@@ -301,6 +313,9 @@ function renderCards(s, c) {
         ['Bind', esc(`${s.server.host || '127.0.0.1'}:${s.server.port || 3000}`), true],
         ['Uptime', esc(duration(s.server.uptimeSec))],
         ['Auth', '<span class="secret">none - loopback only</span>'],
+        ['Upstream keys', s.credentials && s.credentials.mode === 'per-user'
+          ? 'each caller’s own (per-user)'
+          : '<span class="secret">this server’s .env (server mode)</span>'],
       ]),
     },
     {
@@ -324,8 +339,8 @@ function renderCards(s, c) {
         ['Active', esc(PROVIDER_LABEL[p.active] || p.active)],
         ['Model', esc(p.model || (p.active === 'openwebui' ? 'gpt-5.6-luna (default)' : p.active === 'claude' ? 'claude-opus-5 (default)' : '-')), true],
         p.active === 'openwebui' ? ['Gateway', esc(p.openwebui.gatewayHost || 'unset'), true] : null,
-        p.active === 'openwebui' ? ['API key', yes(p.openwebui.keyPresent)] : null,
-        p.active === 'claude' ? ['API key', yes(p.claude.keyPresent)] : null,
+        p.active === 'openwebui' ? ['API key', perUserKey(s) || yes(p.openwebui.keyPresent)] : null,
+        p.active === 'claude' ? ['API key', perUserKey(s) || yes(p.claude.keyPresent)] : null,
         p.active === 'claude' ? ['SDK', yes(p.claude.sdkInstalled, 'installed', 'not installed')] : null,
         pp && pp.ms != null ? ['Probe', esc(`${pp.ms} ms · ${pp.modelCount} models`)] : null,
         pp && !pp.ok && pp.error ? ['Error', `<span style="color:var(--bad-ink)">${esc(pp.error)}</span>`] : null,
@@ -341,7 +356,7 @@ function renderCards(s, c) {
       body: facts([
         ['Source', esc(kb.source)],
         ['Site', esc(kb.confluence.siteUrl ? hostOf(kb.confluence.siteUrl) : 'unset'), true],
-        ['Token', yes(kb.confluence.tokenPresent)],
+        ['Token', (!s.credentials.sharedConfluence && perUserKey(s)) || yes(kb.confluence.tokenPresent)],
         ['Spaces', esc(kb.confluence.spaces.length ? kb.confluence.spaces.join(', ') : 'all the token can see'), true],
         kb.confluence.labels.length ? ['Labels', esc(kb.confluence.labels.join(', ')), true] : null,
         cp && cp.authenticatedAs ? ['Signed in as', esc(cp.authenticatedAs)] : null,
@@ -358,7 +373,7 @@ function renderCards(s, c) {
       body: facts([
         ['Base URL', esc(s.smc.baseUrl || 'unset'), true],
         ['Auth', esc(s.smc.authScheme || '-')],
-        ['Token', yes(s.smc.keyPresent)],
+        ['Token', perUserKey(s) || yes(s.smc.keyPresent)],
         ['Write path', 'none - by construction'],
       ]),
       note: s.smc.configured
@@ -403,9 +418,12 @@ function renderReadiness(s, c) {
       ? ['good', 'Done', 'Bound to loopback only', '/api/generate is unauthenticated, so nothing else on the network can reach it.']
       : ['bad', 'Risk', `Bound to ${s.server.host}`, 'The server has no authentication. Anyone who can reach it can spend the gateway key.'],
     [c.provider.level === 'good' ? 'good' : c.provider.level === 'info' ? 'info' : 'bad', c.provider.label, 'Generation provider', 'ONEPANE_PROVIDER plus its key. Production has no offline fallback.'],
+    s.credentials.mode === 'per-user'
+      ? ['good', 'Done', 'Per-user credentials', 'Every caller spends their own Open WebUI, SMC, and Confluence keys, sent from the extension. .env secrets are ignored.']
+      : ['warn', 'Server keys', 'Per-user credentials', 'Callers without their own keys spend this server’s .env keys. Set ONEPANE_CREDENTIALS=per-user before anyone else can reach it.'],
     [s.knowledgeBase.confluence.configured ? (c.knowledge.level === 'bad' ? 'bad' : 'good') : 'warn',
       s.knowledgeBase.confluence.configured ? c.knowledge.label : 'To do', 'Confluence knowledge base', 'Real CQL siteSearch and v2 include-labels responses have not been checked against the live tenant yet. Coordinate the credential with Cole.'],
-    ['warn', s.smc.configured ? 'Test only' : 'To do', 'SMC API credential', 'v3 tokens are short-lived and per-person, so a pasted token is a test credential. Request read-only service access with Cole.'],
+    ['warn', s.smc.configured || s.credentials.mode === 'per-user' ? 'Pasted tokens' : 'To do', 'SMC API credential', 'v3 tokens are per-person and expire in about 4 hours, so analysts re-paste them in the extension. Next step: get them through an IS-AUTH sign-in instead of pasting.'],
     ['warn', 'To do', 'Server authentication and budget cap', 'No caller auth and no per-user spend cap. Cole’s side already has a cap.'],
     ['warn', 'To do', 'Analyst identity (WorkOS)', 'resolveAuthContext() is a stub that fails closed. Reuse Cole’s WorkOS roles, not a second identity model.'],
     ['warn', 'To do', 'SMC DOM selectors', 'Subject, client, severity, and note classification have never seen the real console DOM.'],
@@ -485,7 +503,7 @@ function renderConfig(s) {
     html.push(`
       <tr>
         <td class="mono nowrap">${esc(v.name)}</td>
-        <td>${v.set ? badge('good', 'Set') : badge('info', 'Unset')}</td>
+        <td>${v.ignored ? badge('warn', 'Ignored') : v.set ? badge('good', 'Set') : badge('info', 'Unset')}</td>
         <td>${value}</td>
         <td>${esc(v.about)}</td>
       </tr>`);

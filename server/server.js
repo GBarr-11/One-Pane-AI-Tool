@@ -10,7 +10,8 @@ require('./env').loadEnv();
 
 const devpack = require('./devpack');
 const activity = require('./activity');
-const { buildStatus, probeProvider } = require('./status');
+const credentials = require('./credentials');
+const { buildStatus, probeProvider, checkCredentials } = require('./status');
 const { smcGet, isConfigured: smcConfigured, describeConfig: describeSmcConfig } = require('./smc/client');
 const { mappingSummary } = require('./smc/adapter');
 const { fetchTicket: fetchSmcTicket } = require('./smc/tickets');
@@ -185,13 +186,19 @@ async function resolveTicket(body) {
     }
   }
 
+  // Falling back to the page is fine, but not silently: an expired SMC token
+  // would otherwise look like SMC working, with a thinner ticket behind it.
+  let smcNotice = null;
   if (!ticket) {
     ticket = inlineTicket(body.ticket);
-    if (ticket) origin = 'inline';
+    if (ticket) {
+      origin = 'inline';
+      if (smcError) smcNotice = `Drafted from the page, not SMC: ${smcError}`;
+    }
   }
 
   return {
-    ticket, origin, smcWarnings, smcMeta, smcError,
+    ticket, origin, smcWarnings, smcMeta, smcError, smcNotice,
   };
 }
 
@@ -255,6 +262,14 @@ async function handleApi(req, res, url, entry) {
     return sendJson(res, 200, await probeProvider());
   }
 
+  // The extension's "Test" button: does each service accept the credentials
+  // this request carries (or, in server mode, the .env ones)? One read-only
+  // call per service; reports accepted/rejected and where the key came from,
+  // never the key.
+  if (req.method === 'GET' && pathname === '/api/credentials/check') {
+    return sendJson(res, 200, await checkCredentials());
+  }
+
   // The ticket list and lookup below serve the dev pack's corpus. Production
   // has no corpus to list, and says so rather than returning an empty one.
   if (req.method === 'GET' && pathname === '/api/tickets') {
@@ -296,7 +311,7 @@ async function handleApi(req, res, url, entry) {
   if (req.method === 'POST' && pathname === '/api/generate') {
     const body = await readBody(req);
     const {
-      ticket, origin, smcWarnings, smcMeta, smcError,
+      ticket, origin, smcWarnings, smcMeta, smcError, smcNotice,
     } = await resolveTicket(body);
 
     if (!ticket) {
@@ -317,6 +332,7 @@ async function handleApi(req, res, url, entry) {
         ...result,
         smcWarnings: smcWarnings.length ? smcWarnings : undefined,
         smcMeta: smcMeta || undefined,
+        smcNotice: smcNotice || undefined,
       });
     } catch (err) {
       entry.error = true;
@@ -331,7 +347,7 @@ async function handleApi(req, res, url, entry) {
   if (req.method === 'POST' && pathname === '/api/suggestions') {
     const body = await readBody(req);
     const {
-      ticket, origin, smcWarnings, smcMeta, smcError,
+      ticket, origin, smcWarnings, smcMeta, smcError, smcNotice,
     } = await resolveTicket(body);
 
     if (!ticket) {
@@ -349,6 +365,7 @@ async function handleApi(req, res, url, entry) {
         ...result,
         smcWarnings: smcWarnings.length ? smcWarnings : undefined,
         smcMeta: smcMeta || undefined,
+        smcNotice: smcNotice || undefined,
       });
     } catch (err) {
       entry.error = true;
@@ -363,7 +380,7 @@ async function handleApi(req, res, url, entry) {
   if (req.method === 'POST' && pathname === '/api/ask') {
     const body = await readBody(req);
     const {
-      ticket, origin, smcWarnings, smcMeta, smcError,
+      ticket, origin, smcWarnings, smcMeta, smcError, smcNotice,
     } = await resolveTicket(body);
 
     if (!ticket) {
@@ -380,6 +397,7 @@ async function handleApi(req, res, url, entry) {
         ...result,
         smcWarnings: smcWarnings.length ? smcWarnings : undefined,
         smcMeta: smcMeta || undefined,
+        smcNotice: smcNotice || undefined,
       });
     } catch (err) {
       entry.error = true;
@@ -420,7 +438,9 @@ async function handleApi(req, res, url, entry) {
         ok: false,
         config,
         kbSource: kbSourceName(),
-        error: 'CONFLUENCE_SITE_URL, CONFLUENCE_EMAIL, and CONFLUENCE_API_TOKEN must all be set',
+        error: confluence.config().siteUrl
+          ? credentials.missingMessage(confluence.config().email ? 'confluenceToken' : 'confluenceEmail')
+          : 'CONFLUENCE_SITE_URL is not set on this server',
       });
     }
     try {
@@ -439,7 +459,11 @@ async function handleApi(req, res, url, entry) {
   }
 
   if (req.method === 'GET' && pathname === '/api/confluence/search') {
-    if (!confluence.isConfigured()) return sendJson(res, 503, { error: 'Confluence is not configured - see .env.example' });
+    if (!confluence.isConfigured()) {
+      return sendJson(res, 503, {
+        error: confluence.config().siteUrl ? credentials.missingMessage('confluenceToken') : 'CONFLUENCE_SITE_URL is not set on this server',
+      });
+    }
     const q = String(url.searchParams.get('q') || '').trim().slice(0, 300);
     if (!q) return sendJson(res, 400, { error: 'Add ?q=<search terms>' });
 
@@ -474,7 +498,11 @@ async function handleApi(req, res, url, entry) {
   if (req.method === 'GET' && pathname === '/api/smc/health') {
     const config = describeSmcConfig();
     if (!smcConfigured()) {
-      return sendJson(res, 200, { ok: false, config, error: 'SMC_API_BASE_URL and SMC_API_PASS must both be set' });
+      return sendJson(res, 200, {
+        ok: false,
+        config,
+        error: config.baseUrl ? credentials.missingMessage('smcToken') : 'SMC_API_BASE_URL is not set on this server',
+      });
     }
 
     const probe = String(url.searchParams.get('path') || '').trim();
@@ -501,7 +529,11 @@ async function handleApi(req, res, url, entry) {
   // content into a terminal or a log. `?full=1` returns the normalized ticket
   // itself, which is real customer data and should be treated as such.
   if (req.method === 'GET' && /^\/api\/smc\/tickets\/[^/]+$/.test(pathname)) {
-    if (!smcConfigured()) return sendJson(res, 503, { error: 'SMC API is not configured - see .env.example' });
+    if (!smcConfigured()) {
+      return sendJson(res, 503, {
+        error: describeSmcConfig().baseUrl ? credentials.missingMessage('smcToken') : 'SMC_API_BASE_URL is not set on this server',
+      });
+    }
 
     const id = decodeURIComponent(pathname.split('/').pop());
 
@@ -549,7 +581,25 @@ const server = http.createServer((req, res) => {
     const entry = activity.track(req, res, url.pathname, {
       mockMount: pack && pack.staticSite ? pack.staticSite.mount : null,
     });
-    handleApi(req, res, url, entry).catch((err) => {
+
+    // The caller's own upstream credentials, if they sent any (see
+    // credentials.js). Refused outright when they arrived over plain HTTP from
+    // off this machine - the keys are already exposed by then, but a service
+    // that works anyway is one nobody notices is leaking them.
+    const { credentials: supplied, error: credError } = credentials.fromHeaders(req.headers);
+    if (credError) {
+      entry.error = true;
+      return sendJson(res, 400, { error: credError });
+    }
+    if (Object.keys(supplied).length && !credentials.secureTransport(req)) {
+      entry.error = true;
+      return sendJson(res, 400, {
+        error: 'Credentials were sent over plain HTTP. This One Pane server must be reached over HTTPS - '
+          + 'change the backend URL in One Pane\'s settings, and replace any key sent this way.',
+      });
+    }
+
+    credentials.run(supplied, () => handleApi(req, res, url, entry)).catch((err) => {
       entry.error = true;
       sendJson(res, 500, { error: err.message });
     });
@@ -560,6 +610,9 @@ const server = http.createServer((req, res) => {
 });
 
 function start({ port = PORT, host = HOST } = {}) {
+  // Validate before listening: a mistyped ONEPANE_CREDENTIALS must stop the
+  // server, not fall back to spending .env keys for every caller.
+  const credMode = credentials.mode();
   return server.listen(port, host, () => {
     const pack = devpack.active();
     const provider = activeProviderName();
@@ -568,6 +621,9 @@ function start({ port = PORT, host = HOST } = {}) {
     if (pack && pack.staticSite) console.log(`  Mock SMC console   http://localhost:${port}${pack.staticSite.mount}`);
     console.log(`  Generation         ${provider}`);
     console.log(`  Knowledge base     ${kbSourceName()}`);
+    console.log(`  Credentials        ${credMode === 'per-user'
+      ? 'per-user - each caller sends their own keys; .env secrets are ignored'
+      : 'server - .env keys, unless the caller sends their own'}`);
     if (provider === 'none') {
       console.log('  ! No provider configured - drafting is refused until ONEPANE_PROVIDER is set in .env');
     }
