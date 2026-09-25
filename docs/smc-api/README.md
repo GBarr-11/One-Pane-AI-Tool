@@ -23,28 +23,45 @@ spec also has `POST /tickets/{id}/notes`, `/close`, `/resolve`, `/reopen`, and
 | `GET /tickets/{id}/notes` | `smc/tickets.js` | the thread (paginated) |
 | `GET /tickets/{id}/contacts` | `smc/tickets.js` | telling client notes from analyst notes |
 | `GET /tickets/{id}/assets` | `smc/tickets.js` | asset names |
+| `GET /tickets` | `smc/history.js` | similar closed tickets (up to 4 filtered queries per draft) |
+| `GET /tickets/{id}/related` | `smc/history.js` | tickets an analyst linked to this one |
+| `GET /notes` | `smc/history.js` | threads of linked and similar tickets, batched with `ticket_id in (...)` |
 
-The shelved ticket-history feature (see `FUTURE_FEATURES.md`) also used
-`GET /tickets`, `GET /tickets/filters` (which fields `filters=` accepts; served
-live, not in the spec), and `GET /tickets/{id}/related`. None are called now.
+## List query grammar (verified live, 2026-09-25)
 
-## List query grammar
+The spec defines no formal grammar. This is what `GET /tickets` actually does:
 
-Examples in the spec (the spec itself defines no formal grammar):
+- `filters`: `field op value` clauses joined by **commas, which means AND**.
+  There is no `and`/`or` keyword: both are a 400 ("invalid number of
+  fields"). OR means separate queries.
+- Text: `subject like '%zerto%'` is a case-insensitive substring match, and
+  `'%zerto%upgrade%'` means both words in that order. Works on `subject`,
+  `body`, `internal_summary`, `root_cause`, `problem.name`, and note `body`.
+  `contains`, `ilike`, `co`, and `sw` are 400s.
+- Exclusion: `nlike` works, but also drops rows where the field is null.
+  **`not like` is accepted and silently ignored.** Re-check any exclusion locally.
+- Datetimes must be full ISO 8601: `closed_at gt '2025-09-25T00:00:00Z'`. A bare
+  date is "invalid type: expected dateTime".
+- Booleans: `is_escalated eq false` (or `eq 0`). Nulls: `reopened_at is null`
+  (`eq null` is a 400).
+- `order_by`: `field direction`, e.g. `closed_at desc`. A bare column name is
+  rejected with "invalid order token".
+- `page`, `per_page`. Responses are `{ page, per_page, total, data[] }`, and
+  `total` is the full match count.
+- Filterable fields are served live at `GET /tickets/filters` and
+  `GET /notes/filters` (not in the spec).
 
-- `filters`: `field op value` clauses joined by commas, which means AND.
-  - Nested fields: `client.id eq 1000`, `status.id eq 3`
-  - Dates: the spec's examples use `contract_date gte '2026-01-01'`, but live
-    `GET /tickets` rejected `closed_at gte '2025-03-23'` with "invalid type:
-    expected dateTime". Datetime fields need a full datetime; check
-    `GET /tickets/filters?detailed=true` for the exact format.
-  - Other operators: `name like '%account%'`, `product_category.id in (12, 15)`
-  - Booleans: `is_status_change eq 0`
-  - Operators seen: `eq`, `like`, `gte`, `in`, `not`, `is`
-- `order_by`: `field direction`, e.g. `id desc`, `created_at desc`. A bare
-  column name is rejected with "invalid order token".
-- `page`, `per_page` (1 to 10000)
-- Responses are `Pagination` (`data[]`, `page`, `per_page`, `total`).
+**Speed.** With a `closed_at` window a text query takes about 1-3 s. The same
+query filtered on `status` instead took about 10 s, and a note-body search with
+no `ticket_id` scope timed out at 20 s. A `per_page=1` count of one subject term
+over 12 months is about 3.5 s. The SMC console's own search box (OR by default,
+quotes, `-word`) is not in the API.
+
+**Not what it looks like.** `reopened_at` is set by the `task-end-hold`
+automation whenever a hold expires, so "reopened" only means something when
+`reopened_by` is a person. Customer notes carry `source: "Client SMC"` (or an
+email source) and a username that is an email address, which identifies them
+without a contacts lookup. Note `visibility` is `All` or `Internal`.
 
 ## TicketResponse fields that matter for ticket history
 
@@ -62,6 +79,5 @@ Examples in the spec (the spec itself defines no formal grammar):
 
 ## Not yet confirmed against the live API
 
-For the ticket-history feature, if it returns: which fields
-`GET /tickets/filters` lists, the status names a closed ticket carries, and the
-note `visibility` values. See `FUTURE_FEATURES.md`.
+The full list of closed status names, and whether a CSAT-style signal can be
+built from note `helpful_counts`.

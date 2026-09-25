@@ -430,6 +430,26 @@ export const PANEL_CSS = /* css */ `
   .source a.name::after { content: ' ↗'; font-size: 11px; color: var(--op-red); }
   .source .tag { font-size: 11px; color: var(--op-muted); }
   .source .kind { font-size: 10.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+  .source .why { margin-top: 2px; padding-left: 7px; border-left: 2px solid var(--op-line); }
+  .source .why.direct { border-left-color: var(--op-green); }
+  .source .why.partial { border-left-color: var(--op-amber); }
+  .rel { margin-left: auto; flex: none; width: 64px; text-align: right; }
+  .rel-pct { display: block; font-size: 12px; font-weight: 700; color: var(--op-ink); font-variant-numeric: tabular-nums; }
+  .rel-bar { display: block; height: 6px; margin-top: 3px; border-radius: 1px; background: var(--op-track); overflow: hidden; }
+  .rel-bar i { display: block; height: 100%; width: 0; background: var(--op-muted); }
+  .rel.high .rel-bar i { background: var(--op-green); }
+  .rel.medium .rel-bar i { background: var(--op-amber); }
+  .vote { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
+  .vote-btn {
+    font: inherit; font-size: 11px; line-height: 1; padding: 3px 7px; cursor: pointer;
+    border: 1px solid var(--op-line); border-radius: 999px; background: var(--op-field); color: var(--op-ink);
+    filter: grayscale(1); opacity: .9;
+  }
+  .vote-btn:hover { background: var(--op-hover); opacity: 1; }
+  .vote-btn.on { filter: none; opacity: 1; border-color: var(--op-ink); }
+  .hidden-sources { margin-top: 6px; font-size: 11px; color: var(--op-muted); }
+  .hidden-sources summary { cursor: pointer; color: var(--op-faint); }
+  .hidden-sources ul { margin: 4px 0 0; padding-left: 16px; }
   .source .score {
     margin-left: auto;
     font-size: 11px; font-weight: 700; color: var(--op-ink);
@@ -475,6 +495,80 @@ export const PANEL_CSS = /* css */ `
     animation: spin .7s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---------------- live progress ----------------
+     Under the Generate / Ask button while the pipeline runs. Same container
+     language as .status: hard left edge in Core Red, neutrals everywhere
+     else. Times are technical values, so they are set in the mono face. */
+
+  .progress {
+    position: relative; overflow: hidden;
+    margin-top: 12px;
+    background: var(--op-bg);
+    border: 1px solid var(--op-line); border-left: 3px solid var(--op-red);
+    border-radius: 0 6px 6px 0;
+    padding: 10px 12px 6px;
+  }
+  /* A Core Red sweep along the top edge: working, not stuck. */
+  .progress:not(.stopped)::before {
+    content: ''; position: absolute; top: 0; left: -40%;
+    width: 40%; height: 2px; background: var(--op-red);
+    animation: progress-sweep 1.6s ease-in-out infinite;
+  }
+  @keyframes progress-sweep { to { left: 100%; } }
+  .progress-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    font-size: 10.5px; font-weight: 700; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--op-muted);
+  }
+  .progress.stopped .progress-head > span:first-child { color: var(--op-danger-ink); }
+  .mono {
+    font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+    font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none;
+    color: var(--op-muted); font-variant-numeric: tabular-nums;
+  }
+  .progress-head .mono { color: var(--op-ink); }
+
+  .steps { list-style: none; margin: 8px 0 0; padding: 0; }
+  .step {
+    position: relative;
+    display: grid; grid-template-columns: 16px 1fr auto; gap: 9px;
+    align-items: start; padding: 5px 0;
+  }
+  /* The rule joining one step's mark to the next. */
+  .step:not(:last-child)::after {
+    content: ''; position: absolute; left: 7.5px; top: 23px; bottom: -3px;
+    width: 1px; background: var(--op-line);
+  }
+  .step-dot { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+  .step-spin {
+    width: 12px; height: 12px; border-radius: 50%;
+    border: 2px solid var(--op-track); border-top-color: var(--op-red);
+    animation: spin .8s linear infinite;
+  }
+  .step-mark {
+    width: 16px; height: 16px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9.5px; font-weight: 800; line-height: 1;
+  }
+  .step.done .step-mark { background: var(--op-ink); color: var(--op-bg); }
+  .step.skipped .step-mark { border: 1px solid var(--op-line); color: var(--op-faint); }
+  .step.error .step-mark { background: var(--op-red); color: #FFFFFF; }
+
+  .step-text { min-width: 0; }
+  .step-label { display: block; font-size: 12.5px; font-weight: 600; color: var(--op-ink); }
+  .step.active .step-label { font-weight: 700; }
+  .step.done .step-label { color: var(--op-muted); font-weight: 500; }
+  .step.skipped .step-label { color: var(--op-faint); font-weight: 500; }
+  .step.error .step-label { color: var(--op-danger-ink); }
+  .step-detail { display: block; font-size: 11.5px; color: var(--op-muted); margin-top: 1px; }
+  .step .mono { margin-top: 2px; }
+  .step.active .mono { color: var(--op-red); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .progress::before { display: none; }
+    .step-spin { animation: none; border-color: var(--op-red); }
+  }
 
   .hint { margin-top: 11px; font-size: 11.5px; color: var(--op-faint); text-align: center; }
 `;

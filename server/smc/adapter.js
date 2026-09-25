@@ -18,6 +18,9 @@ const { redact } = require('./client');
 /** Pull `.name` off a `*Simple` relation object, tolerating null. */
 const nameOf = (rel) => (rel && typeof rel === 'object' && rel.name ? String(rel.name).trim() : '');
 
+/** Pull `.id` off a `*Simple` relation object, or null. */
+const idOf = (rel) => (rel && typeof rel === 'object' && rel.id != null && Number.isFinite(Number(rel.id)) ? Number(rel.id) : null);
+
 /** Pull a human name off a UserSimple / UserContact, tolerating null. */
 const personOf = (user) => {
   if (!user || typeof user !== 'object') return '';
@@ -202,6 +205,9 @@ function toTicket(ticket, parts = {}) {
     subject,
     title: subject,
     client: nameOf(record.client),
+    // Ids let the ticket-history search (smc/history.js) filter exactly,
+    // rather than by a name that may be spelled two ways.
+    clientId: idOf(record.client),
     clientContact: primaryContact(parts.contacts),
     status: str(record.status),
     severity: str(record.severity),
@@ -209,7 +215,9 @@ function toTicket(ticket, parts = {}) {
     queue: nameOf(record.queue),
     type: str(record.type),
     category: nameOf(record.category),
+    categoryId: idOf(record.category),
     problem: nameOf(record.problem),
+    problemId: idOf(record.problem),
     assignedTo: personOf(record.assigned_to),
     openedBy: personOf(record.created_by),
     created: str(record.created_at),

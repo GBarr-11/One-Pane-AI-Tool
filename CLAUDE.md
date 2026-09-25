@@ -77,26 +77,83 @@ the original `siteSearch` design returning the same off-topic pages for every
 query, which left every draft with zero SOPs. `search.js` now runs several small
 queries anchored on title prefixes, pre-ranks, and fetches the top 8. The
 reasons are in the README's "How it works". The v2 page fetch works as coded.
-Drafts **and** the Ask tab (`server/ask.js`) are grounded. Weak spot: topics
-the wiki barely covers, e.g. a Cohesity VM restore, still surface the nearest
-generic "restore" SOP, and confidence stays medium.
+Drafts **and** the Ask tab (`server/ask.js`) are grounded.
 
-**SMC ticket history: shelved (2026-09-23).** Searching real closed SMC tickets
-as precedent, plus a "Find similar tickets" button in the Ask tab, was built and
-then removed after its first live run. Its date filter was rejected by SMC and
-its related-ticket list was mostly off-topic. The design, Grant's matching rules,
-and what to fix are in `FUTURE_FEATURES.md`; the code is kept, unloaded, in
-`docs/future/ticket-history/`. Its requires still point at the old `data/`
-path and would need repointing to `onepane-mock/data/` if revived. What stayed
-live: only mock tickets get mock precedent (`server/knowledge.js`), so a live ticket is never handed invented
-resolved tickets. The Ask tab stays and answers from the open ticket and its
-matching Confluence SOPs, until it is pointed at Cole's `/api/query`. The v3 spec is saved at
-`docs/smc-api/openapi-v3.json`.
+**Relevance checks (added 2026-09-24).** Live tickets #3563979 (EEC2
+migration routing) and #3810007 (Elastic FIM) were citing off-topic SOPs at
+"high" confidence. The cause was generic terms: the "- Service Delivery" title
+suffix, the word "Elastic", and a Teams link as the customer message. Every
+SOP now passes two checks:
+
+1. **Title check** (`search.js`). Per-term title counts, cached for a day, mark
+   terms in more than 1.5% of titles as broad. A page needs a non-broad term
+   in its title or labels. Search terms also draw on the AI summary's
+   problem statement and drop URLs, ids, and the client name.
+2. **Model judge** (`server/relevance.js`). The provider's `complete()` grades
+   the top 5 pages direct, partial, or unrelated. Unrelated pages are hidden.
+   "High" confidence needs a direct match, and a failed check caps confidence
+   at medium.
+
+Rejections go to `kb.rejected` and are shown in the panel. `kb.gap` flags
+"no SOP covers this". Both FIM and routing tickets now correctly show none,
+and the Zerto upgrade ticket keeps its two upgrade docs as direct.
+`ONEPANE_RELEVANCE_CHECK=off` disables the judge.
+
+**Token budget and grounding (added 2026-09-24).**
+
+- **Prompt size:** `server/thread.js` sends the opening note, the last 6 notes,
+  and up to 4 fact-bearing older notes (12k characters), plus the AI summary.
+  Internal notes are labelled INTERNAL. `server/excerpt.js` sends each SOP's
+  relevant sections. On #3563979 the prompt dropped to about 3,100 tokens.
+- **Thread-grounded confidence:** with no SOP, a thread with concrete facts
+  drafts at medium (`confidence.grounding: 'thread'`) instead of abstaining.
+- **Fact check:** `server/grounding.js` looks up every IP, version, number and
+  hostname in the draft, with no model call.
+- **Query expansion:** `server/confluence/expand.js` stands in for embeddings,
+  which the gateway lacks.
+- **Analyst feedback:** `server/feedback.js`, `POST /api/feedback`, stored in
+  `.onepane/` as metadata only. Votes hide or boost SOPs by ticket and by
+  problem type.
+- **Panel:** each SOP shows a 0-100% relevance bar (`relevancePct` in
+  `generate.js`).
+
+The Draft tab does **not** read the Ask tab's question or answer.
+
+**Live progress (added 2026-09-25).** `/api/generate` and `/api/ask` with
+`"progress": true` answer in NDJSON: stage lines, then one `result` line
+carrying the real status (`server/progress.js`). Pipeline code reports through
+`opts.onProgress(stage, state, detail)`. Details must be counts only, never
+ticket text. The extension relays the lines over a `chrome.runtime` port
+(`STREAM_PORT` in `shared/messages.js`), and the panel draws them under the
+Generate/Ask button, updating only that block. When adding a pipeline step,
+add its label to `STAGES`.
+
+**SMC ticket history: live (2026-09-25).** Grant owns this feature for now,
+not Cole's AI CTRL. The first version was shelved on 2026-09-23: its bare-date
+filter was a 400, and its "related" list was mostly off-topic. The rebuild has
+three parts:
+
+- `server/smc/history.js` does the SMC work. It reads every SMC-linked ticket
+  (`/tickets/{id}/related`). It searches closed tickets from the last 12
+  months with up to 4 `like` queries: problem, subject, `internal_summary`,
+  and same client. It re-checks every rule locally and collapses repeated
+  subjects to two. It ranks client back-and-forth tickets higher, and reads
+  the leaders' threads in one batched `GET /notes`.
+- `server/precedent.js` has the model grade candidates identical, similar, or
+  unrelated, and describe how linked tickets relate.
+- `retrieval.js` lets an *identical* match raise confidence one step, short of
+  the hard caps.
+
+Suggestions and Ask pass `history: false`. The verified filter grammar
+(comma = AND, no OR, `not like` silently ignored, ISO datetimes,
+`task-end-hold` reopens) is in `docs/smc-api/README.md`. Mock tickets still get
+only mock precedent, and live tickets only SMC history. The follow-ups are in
+`FUTURE_FEATURES.md`. The v3 spec is saved at `docs/smc-api/openapi-v3.json`.
 
 `onepane-mock/smc-console/` is a stand-in for the SMC ticket view, mounted at
 `/mock-smc/`. It is the host page the overlay is tested against, and the
 extension's localhost match is narrowed to that path so the overlay never
-injects into the Control Center. `test/run-tests.js` is 103 dependency-free
+injects into the Control Center. `test/run-tests.js` is 135 dependency-free
 tests. It installs the mock pack for fixtures, and its "production mode" group
 uninstalls it.
 

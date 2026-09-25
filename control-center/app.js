@@ -468,7 +468,7 @@ function renderActivity() {
         <td class="mono nowrap">${esc(e.method)} ${esc(e.route)}</td>
         <td class="mono nowrap">${e.ticketId ? `${esc(e.ticketId)}${e.origin ? ` <span class="secret">${esc(e.origin)}</span>` : ''}` : ''}</td>
         <td class="nowrap">${esc(e.provider || '')}</td>
-        <td>${e.confidence ? badge(CONF_LEVEL[e.confidence] || 'info', e.confidence) : ''}</td>
+        <td>${e.confidence ? badge(CONF_LEVEL[e.confidence] || 'info', e.confidence) : ''}${e.kbGap ? ` <span class="secret" title="No SOP on the wiki covers this ticket">no SOP</span>` : ''}</td>
         <td>${statusBadge(e.status, e.error)}</td>
         <td class="num">${e.ms == null ? '' : esc(e.ms)}</td>
       </tr>`).join('')

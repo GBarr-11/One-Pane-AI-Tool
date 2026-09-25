@@ -18,12 +18,16 @@ const SMC_BASE_URL = trim(process.env.SMC_BASE_URL);
 const KB_BASE_URL = trim(process.env.ONEPANE_KB_BASE_URL);
 
 /**
+ * The SMC console's ticket page, e.g.
+ * https://app.expedient.com/ticket/3767603/note/index. Singular `ticket`: the
+ * plural `/tickets/<id>` (the API's path shape) is a "page not found" there.
+ *
  * @param {string} id SMC ticket number
  * @returns {string|null}
  */
 function ticketUrl(id) {
   if (!SMC_BASE_URL || !id) return null;
-  return `${SMC_BASE_URL}/tickets/${encodeURIComponent(id)}`;
+  return `${SMC_BASE_URL}/ticket/${encodeURIComponent(String(id).replace(/^#/, ''))}/note/index`;
 }
 
 /**

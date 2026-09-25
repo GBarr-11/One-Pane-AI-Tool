@@ -67,13 +67,13 @@ function extractReply(content) {
 }
 
 async function generate({
-  ctx, docs, precedent, confidence, tones = [], instruction = '', previousDraft = null,
+  ctx, docs, precedent, linked = [], confidence, tones = [], instruction = '', previousDraft = null,
 }) {
   const { baseUrl, apiKey, model } = config();
 
   const userMessage = previousDraft
     ? buildRevisionMessage(ctx, previousDraft, tones, instruction)
-    : buildUserMessage(ctx, docs, precedent, confidence, tones, instruction);
+    : buildUserMessage(ctx, docs, precedent, confidence, tones, instruction, linked);
 
   let res;
   try {
@@ -328,4 +328,100 @@ async function polish({ text }) {
   };
 }
 
-module.exports = { generate, suggest, answer, polish, extractReply };
+/**
+ * The model and reasoning effort for the small grading calls - query
+ * expansion, the SOP relevance check, and the precedent check - which all go
+ * through complete(). They sit in series in front of the draft, so their
+ * latency is the draft's latency.
+ *
+ *   ONEPANE_AUX_MODEL      a faster model for them (default: ONEPANE_MODEL)
+ *   ONEPANE_AUX_REASONING  reasoning effort for them: minimal (default) | low |
+ *                          medium | high | off (send none)
+ *
+ * Measured 2026-09-25 on a live DNS ticket's relevance check, gpt-5.6-luna:
+ * default effort 4.8 s, `minimal` 3.4 s, with the same verdicts. The draft
+ * itself keeps ONEPANE_MODEL at its default effort.
+ */
+function auxConfig(model) {
+  const aux = (process.env.ONEPANE_AUX_MODEL || '').trim() || model;
+  const effort = String(process.env.ONEPANE_AUX_REASONING ?? 'minimal').trim().toLowerCase();
+  return { model: aux, effort: ['minimal', 'low', 'medium', 'high'].includes(effort) ? effort : null };
+}
+
+/** Models that reject `reasoning_effort`, learned from a 400; retried without it. */
+const noEffort = new Set();
+
+/**
+ * A plain completion: caller's system prompt and message in, text out. Used
+ * by the relevance checks and query expansion, which own their prompts and
+ * parsing so that both providers grade the same way.
+ */
+async function complete({ system, user }) {
+  const { baseUrl, apiKey, model: draftModel } = config();
+  const { model, effort } = auxConfig(draftModel);
+
+  const send = (withEffort) => fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      stream: false,
+      ...(withEffort ? { reasoning_effort: effort } : {}),
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+    }),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+
+  let res;
+  try {
+    const withEffort = Boolean(effort) && !noEffort.has(model);
+    res = await send(withEffort);
+    // A model that does not take reasoning_effort answers 400; once is enough to learn that.
+    if (withEffort && res.status === 400) {
+      const detail = await res.text().catch(() => '');
+      if (/reasoning/i.test(detail)) {
+        noEffort.add(model);
+        res = await send(false);
+      } else {
+        res = { ok: false, status: 400, text: async () => detail };
+      }
+    }
+  } catch (err) {
+    if (err.name === 'TimeoutError') {
+      throw new Error(`Open WebUI did not respond within ${TIMEOUT_MS / 1000}s.`);
+    }
+    throw new Error(`Could not reach Open WebUI at ${baseUrl} - ${err.cause?.code || err.message}`);
+  }
+
+  if (res.status === 401 || res.status === 403) {
+    throw new Error(credentials.rejectedMessage('owuiKey', 'Open WebUI'));
+  }
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => '')).slice(0, 300);
+    throw new Error(`Open WebUI error ${res.status}${detail ? `: ${detail}` : ''}`);
+  }
+
+  let body;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error('Open WebUI returned a non-JSON response - check that OWUI_URL ends in /api.');
+  }
+
+  const choice = body.choices && body.choices[0];
+  if (!choice || !choice.message) {
+    throw new Error('Open WebUI returned no completion.');
+  }
+
+  return { text: extractReply(choice.message.content), provider: 'openwebui', model: body.model || model };
+}
+
+module.exports = {
+  generate, suggest, answer, polish, complete, extractReply, auxConfig,
+};

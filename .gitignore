@@ -2,6 +2,9 @@ node_modules/
 *.log
 .DS_Store
 
+# Local runtime data: analyst feedback on sources (metadata only).
+.onepane/
+
 # Never commit credentials - SMC and Anthropic keys live here.
 .env
 .env.*

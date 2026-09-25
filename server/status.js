@@ -16,6 +16,7 @@
 const pkg = require('../package.json');
 const devpack = require('./devpack');
 const activity = require('./activity');
+const { feedbackSummary } = require('./feedback');
 const { activeProviderName, availableProviders } = require('./generate');
 const { kbSourceName } = require('./knowledge');
 const { linksConfigured } = require('./links');
@@ -34,6 +35,8 @@ const ENV_VARS = [
   { name: 'CONFLUENCE_SHARED_ACCOUNT', group: 'Credentials', secret: false, about: 'true = in per-user mode, callers without their own Confluence token use the .env one. Service account only.' },
   { name: 'ONEPANE_PROVIDER', group: 'Generation', secret: false, about: 'openwebui | claude. Unset means no provider - drafting is refused, not faked.' },
   { name: 'ONEPANE_MODEL', group: 'Generation', secret: false, about: 'Model ID override for the active provider.' },
+  { name: 'ONEPANE_AUX_MODEL', group: 'Generation', secret: false, about: 'Faster model for query expansion and the relevance checks. Default: ONEPANE_MODEL.' },
+  { name: 'ONEPANE_AUX_REASONING', group: 'Generation', secret: false, about: 'minimal (default) | low | medium | high | off. Reasoning effort for those checks.' },
   { name: 'OWUI_URL', group: 'Generation', secret: false, about: 'Open WebUI gateway, host plus /api.' },
   { name: 'OWUI_API_KEY', group: 'Generation', secret: true, about: 'Open WebUI key, server mode only. Per-user: each analyst adds their own in the extension.' },
   { name: 'ANTHROPIC_API_KEY', group: 'Generation', secret: true, about: 'Direct Anthropic key, for ONEPANE_PROVIDER=claude.' },
@@ -47,6 +50,11 @@ const ENV_VARS = [
   { name: 'CONFLUENCE_SPACES', group: 'Knowledge base', secret: false, about: 'Space keys to search (TO,PRE,IKB hold the SOPs). Unset = every space the token sees.' },
   { name: 'CONFLUENCE_LABELS', group: 'Knowledge base', secret: false, about: 'Only pages with one of these labels.' },
   { name: 'ONEPANE_KB_SOURCE', group: 'Knowledge base', secret: false, about: 'auto | confluence. (mock only inside onepane-mock.)' },
+  { name: 'ONEPANE_RELEVANCE_CHECK', group: 'Knowledge base', secret: false, about: 'on (default) | off. Model check that hides unrelated SOPs.' },
+  { name: 'ONEPANE_QUERY_EXPANSION', group: 'Knowledge base', secret: false, about: 'on (default) | off. Model rewrites the ticket into wiki search phrases.' },
+  { name: 'ONEPANE_PRECEDENT_SOURCE', group: 'Ticket history', secret: false, about: 'auto (default) | smc | off. Linked and similar SMC tickets as precedent.' },
+  { name: 'SMC_HISTORY_MONTHS', group: 'Ticket history', secret: false, about: 'How far back similar tickets are searched. Default 12.' },
+  { name: 'ONEPANE_DATA_DIR', group: 'Server', secret: false, about: 'Where source feedback is kept. Defaults to .onepane/ (gitignored).' },
   { name: 'SMC_BASE_URL', group: 'Links', secret: false, about: 'SMC web console, for ticket citation links.' },
   { name: 'ONEPANE_KB_BASE_URL', group: 'Links', secret: false, about: 'Techdoc link base for docs without their own URL.' },
   { name: 'HOST', group: 'Server', secret: false, about: 'Bind address. Defaults to 127.0.0.1 - keep it loopback.' },
@@ -177,6 +185,7 @@ function buildStatus({ host, port } = {}) {
       lastRoute: ext ? ext.route : null,
     },
     activity: activity.summary(),
+    feedback: (({ votes, up, down }) => ({ votes, up, down }))(feedbackSummary()),
     env: envSnapshot(),
   };
 }
