@@ -18,10 +18,12 @@ const { fetchTicket: fetchSmcTicket } = require('./smc/tickets');
 const { generateDraft, getSuggestions, activeProviderName } = require('./generate');
 const { answerQuestion } = require('./ask');
 const { polishText } = require('./polish');
+const { recordVote } = require('./feedback');
 const { buildContext } = require('./context');
 const { retrieveKnowledge, kbSourceName } = require('./knowledge');
 const confluence = require('./confluence/client');
 const { searchText: searchConfluence } = require('./confluence/search');
+const { responder, plural } = require('./progress');
 
 const PORT = Number(process.env.PORT || 3000);
 // Loopback only. /api/generate is unauthenticated and, with a real provider,
@@ -167,7 +169,8 @@ function inlineTicket(raw) {
  * immediately, since a scraped ticket is still worth using if SMC is
  * unreachable or the id is not one it recognizes.
  */
-async function resolveTicket(body) {
+async function resolveTicket(body, report = () => {}) {
+  report('ticket', 'active');
   let ticket = devpack.packTicket(body.ticketId);
   // Where the ticket came from decides where its precedent may come from:
   // mock tickets get mock precedent, live ones never do (see knowledge.js).
@@ -211,6 +214,13 @@ async function resolveTicket(body) {
     }
   }
 
+  if (ticket) {
+    const where = { mock: 'demo ticket', smc: 'from SMC', inline: 'from the page' }[origin] || '';
+    report('ticket', 'done', [where, plural(ticket.notes.length, 'note')].filter(Boolean).join(' · '));
+  } else {
+    report('ticket', 'error', 'could not be read');
+  }
+
   return {
     ticket, origin, smcWarnings, smcMeta, smcError, smcNotice, smcSkipped,
   };
@@ -236,6 +246,8 @@ function noteResult(entry, ticket, origin, result) {
   if (result) {
     entry.provider = result.provider || null;
     if (result.confidence) entry.confidence = result.confidence.level;
+    // No SOP on the wiki covers this ticket: a flag, never the ticket text.
+    if (result.kb && result.kb.gap) entry.kbGap = true;
   }
 }
 
@@ -330,16 +342,19 @@ async function handleApi(req, res, url, entry) {
 
   if (req.method === 'POST' && pathname === '/api/generate') {
     const body = await readBody(req);
+    // With `progress: true` the reply is NDJSON: stage updates, then the result (progress.js).
+    const { report, send } = responder(req, res, body, sendJson);
     const {
       ticket, origin, smcWarnings, smcMeta, smcError, smcNotice, smcSkipped,
-    } = await resolveTicket(body);
+    } = await resolveTicket(body, report);
 
     if (!ticket) {
-      return sendJson(res, 400, { error: unknownTicketError(body, smcError, smcSkipped) });
+      return send(400, { error: unknownTicketError(body, smcError, smcSkipped) });
     }
 
     try {
       const result = await generateDraft(ticket, {
+        onProgress: report,
         provider: body.provider,
         asOf: asOfFor(body, origin),
         ticketOrigin: origin,
@@ -348,7 +363,7 @@ async function handleApi(req, res, url, entry) {
         previousDraft: body.previousDraft,
       });
       noteResult(entry, ticket, origin, result);
-      return sendJson(res, 200, {
+      return send(200, {
         ...result,
         smcWarnings: smcWarnings.length ? smcWarnings : undefined,
         smcMeta: smcMeta || undefined,
@@ -356,7 +371,7 @@ async function handleApi(req, res, url, entry) {
       });
     } catch (err) {
       entry.error = true;
-      return sendJson(res, 500, { error: err.message });
+      return send(500, { error: err.message });
     }
   }
 
@@ -399,22 +414,24 @@ async function handleApi(req, res, url, entry) {
   // with /api/generate so a live SMC ticket works here too.
   if (req.method === 'POST' && pathname === '/api/ask') {
     const body = await readBody(req);
+    const { report, send } = responder(req, res, body, sendJson);
     const {
       ticket, origin, smcWarnings, smcMeta, smcError, smcNotice, smcSkipped,
-    } = await resolveTicket(body);
+    } = await resolveTicket(body, report);
 
     if (!ticket) {
-      return sendJson(res, 400, { error: unknownTicketError(body, smcError, smcSkipped) });
+      return send(400, { error: unknownTicketError(body, smcError, smcSkipped) });
     }
 
     try {
       const result = await answerQuestion(ticket, body.question, {
+        onProgress: report,
         provider: body.provider,
         asOf: asOfFor(body, origin),
         ticketOrigin: origin,
       });
       noteResult(entry, ticket, origin, result);
-      return sendJson(res, 200, {
+      return send(200, {
         ...result,
         smcWarnings: smcWarnings.length ? smcWarnings : undefined,
         smcMeta: smcMeta || undefined,
@@ -422,7 +439,7 @@ async function handleApi(req, res, url, entry) {
       });
     } catch (err) {
       entry.error = true;
-      return sendJson(res, 500, { error: err.message });
+      return send(500, { error: err.message });
     }
   }
 
@@ -447,6 +464,19 @@ async function handleApi(req, res, url, entry) {
       entry.error = true;
       return sendJson(res, 500, { error: err.message });
     }
+  }
+
+  // An analyst's vote on a cited SOP. Metadata only, validated and size-capped
+  // in feedback.js, because anyone who can reach this server can call it.
+  if (req.method === 'POST' && pathname === '/api/feedback') {
+    const body = await readBody(req);
+    const result = recordVote(body);
+    if (!result.ok) {
+      entry.error = true;
+      return sendJson(res, 400, { error: result.error });
+    }
+    entry.ticketId = result.record.ticketId;
+    return sendJson(res, 200, { ok: true, vote: result.record.vote, docId: result.record.docId });
   }
 
   // Confluence: is the token loaded and accepted, and what does a search return?
@@ -622,6 +652,11 @@ const server = http.createServer((req, res) => {
 
     credentials.run(supplied, () => handleApi(req, res, url, entry)).catch((err) => {
       entry.error = true;
+      // A progress stream has already sent its headers: finish it with an error line.
+      if (res.headersSent) {
+        if (!res.writableEnded) res.end(`${JSON.stringify({ type: 'result', status: 500, data: { error: err.message } })}\n`);
+        return;
+      }
       sendJson(res, 500, { error: err.message });
     });
     return;

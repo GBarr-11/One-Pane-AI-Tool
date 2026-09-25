@@ -4,8 +4,8 @@
  * Recent API activity, in memory, for the Control Center.
  *
  * METADATA ONLY. An entry records which route was hit, by what kind of caller,
- * how it went, and - for pipeline calls - the ticket id, provider, and
- * confidence. It never records a request or response body, a query string, a
+ * how it went, and - for pipeline calls - the ticket id, provider,
+ * confidence, and whether any SOP covered the ticket. It never records a request or response body, a query string, a
  * question, a draft, or a note: the Control Center is a place to see that the
  * wiring works, not a second copy of customer data. A ticket id is already
  * what an analyst reads off the console, and it is what makes an entry useful.

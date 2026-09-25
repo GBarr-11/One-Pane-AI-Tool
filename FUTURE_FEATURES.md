@@ -4,89 +4,127 @@ Ideas that were built or designed far enough to learn from, but are **not in
 the live app** because they need more refinement. Each entry says what it was
 for, what went wrong, and what to fix before it comes back.
 
-The current focus is getting real techdocs (Confluence) connected. Nothing here
-should be picked up until that's solid.
+Real techdocs (Confluence) are connected and, as of 2026-09-24, every SOP shown
+passes a title check and a model relevance check (README, "How it works").
+With those in place, the first thing live tickets showed is how often **no
+SOP exists** for what clients commonly ask: #3563979 (post-migration Meraki/BGP
+routing on EEC2) and #3810007 (Elastic File Integrity Monitoring) both
+correctly came back with none. The first two entries below build on that.
 
 ---
 
-## SMC ticket history as a source of truth
+## Knowledge-gap queue: suggested TechDocs from recurring tickets
 
-**Status:** shelved 2026-09-23. It was removed from the server and extension
-after its first run against a live ticket. The code is kept for reference, not
-loaded, in [`docs/future/ticket-history/`](docs/future/ticket-history/).
+**Status:** proposed 2026-09-24. The signal already exists (`kb.gap`); nothing
+collects it yet.
 
-### What it was for
+### What it is for
 
-If similar tickets were resolved a certain way, the next reply should keep the
-basis of that process: the same diagnostic order, the same fix, and the same
-ask of the customer. The feature did two things:
+Turn "no SOP covers this" from a dead end into a to-do list for the wiki. When
+the same kind of ticket keeps arriving with no matching SOP, that is a page
+the TO/PRE/IKB spaces should have. Writing it makes the next draft grounded,
+and makes the answer the same whichever analyst picks up the ticket, which is
+the uniformity goal.
 
-1. **Draft grounding.** Real closed SMC tickets were fed to the model as
-   precedent alongside techdocs, with the prompt told to follow the process
-   that worked without copying the other ticket's specifics.
-2. **Ask tab.** A **Find similar tickets** button listed matching tickets with
-   links into SMC. An "include similar resolved tickets" option let Ask answer
-   "how did we fix this last time?"
+### How it would work
 
-### The rules Grant set (keep these when it comes back)
+1. **Collect.** Every draft already returns `kb.gap` (true when nothing survived
+   both relevance checks), `kb.rejected` (what was considered and why it was
+   turned away), and the ticket's SMC problem type and category. The
+   Control Center's activity log already marks those calls "no SOP". A gap
+   record would persist: problem type, category, the search anchors, the
+   rejected titles, and the ticket id. No bodies, the same rule
+   `server/activity.js` follows.
+2. **Cluster.** Group gap records by SMC problem type first, then by shared
+   anchor terms ("elastic + fim", "eec2 + bgp + meraki"). A cluster needs a
+   minimum count and distinct clients before it counts as recurring, so one
+   noisy ticket does not become a doc request.
+3. **Suggest.** For each recurring cluster, draft a suggested TechDoc: a title
+   in house style ("SOP - Elastic - File Integrity Monitoring for Client
+   Directories"), the questions clients asked (from the tickets), the nearest
+   existing pages (the `partial` verdicts and the rejects), and which space it
+   belongs in. Drafted by the same gateway, reviewed by a person.
+4. **File.** Push the suggestion to Confluence as a **draft** page or a
+   page-request task in a "TechDocs backlog" space, or as a Jira ticket, never
+   as a published page. That is the first One Pane write outside SMC, so it
+   needs a separate, write-scoped credential and a human owner per space.
+5. **Close the loop.** When a page appears whose title matches a cluster's
+   anchors, mark the gap resolved and re-check a sample of those tickets.
 
-- **Successful** = closed, not reopened, not escalated. This is provisional
-  until there's a CSAT-style signal. SMC v3 has per-note `helpful_count` votes
-  and `GET /tickets/{id}/notes/{noteId}/feedback`, which are the likely basis.
-- **Similar** = the **same problem type** from any client, since highly
-  repeatable tickets are handled the same way whoever raised them. When the
-  problem is unclassified, the same client and the same category.
-- Another client's ticket does **not** need heavy redaction. Analysts can see
-  every ticket and client in SMC anyway. It should be labelled with its client
-  so it's obvious the precedent came from a separate case.
+### Before building it
 
-### How it worked
+- Decide where gap records live. The activity log is in-memory by design;
+  durable records probably belong beside Cole's Postgres audit log rather
+  than in a second store here.
+- Agree the write path with whoever owns TO/PRE/IKB. Draft pages or a backlog
+  task, not direct publishing.
+- Run the collection for a few weeks first. The clusters, not guesses, say
+  which docs are worth writing.
+- Watch for false gaps. If the judge rejects a page that is actually right,
+  that shows up here as a wrong doc request. The `kb.rejected` reasons in the
+  record are how to audit that.
 
-- `history.js` queried `GET /tickets` with SMC's filter grammar, e.g.
-  `filters=problem.id eq 7, closed_at gte '…', is_escalated eq 0` and
-  `order_by=closed_at desc`. It asked `GET /tickets/filters` which fields were
-  filterable, and re-checked every rule on our side.
-- The best four matches had their notes read. Customer-facing replies, internal
-  work notes, `internal_summary`, and `root_cause` went into the prompt, each
-  fenced and labelled.
-- `precedent.js` chose the source, mock or SMC, and never mixed the two.
+---
 
-### What went wrong on the first live run (ticket #3767603, a Zerto upgrade notice)
+## Semantic search index for TechDocs
 
-1. **Every history query failed with SMC 400:**
-   `'2025-03-23': invalid type: expected dateTime`. The `closed_at gte` clause
-   sent a bare date, and SMC wants a full datetime. Because both queries
-   (by problem, and by client + category) carried the clause, **Similar
-   resolved** came back empty. The fix is probably `'2025-03-23T00:00:00Z'`, but
-   confirm the exact format with `GET /tickets/filters?detailed=true`, which
-   returns an example value per field.
-2. **"Related" was mostly unrelated.** The list merged tickets SMC links to this
-   one (real signal: #3761129) with "open tickets for the same client". The
-   second group had no topic check, so a Zerto upgrade notice listed shipment
-   arrivals and a Cohesity network migration. Same client is not the same
-   subject. Either drop that group, or require a real subject or problem match
-   before showing a ticket.
-3. **Untested assumptions that remain:** which fields `/tickets/filters`
-   actually accepts, the closed status names, and the note `visibility` values
-   (see [`docs/smc-api/README.md`](docs/smc-api/README.md)).
+**Status:** blocked 2026-09-24. Expedient's Open WebUI gateway serves no
+embedding model: `/embeddings` returns 500, and none of its 84 models embeds.
+Query expansion (`server/confluence/expand.js`) stands in for now.
 
-### Before bringing it back
+With an embedding model on the gateway, index TO/PRE/IKB nightly. That is
+about 5,640 pages; embed the title, the space, and the page's opening. Store
+the vectors locally, since the server is dependency-free (a JSON file of
+vectors is fine at this size). Merge the top semantic hits into the
+candidates before the title check. Semantic hits may lack a shared title
+term, so they should skip that check and rely on the relevance judge. Ask IT
+for an embedding model on the gateway when the SMC API access request goes in.
 
-- Fix the datetime format, and add a live smoke check that runs a single
-  `GET /tickets?filters=…&per_page=1` before trusting the query shape.
-- Show **SMC-linked tickets** on their own. Drop or gate "open for the same
-  client."
-- Consider whether notification and maintenance tickets (like a Zerto upgrade
-  notice) should look for precedent at all. They are closer to templates.
-- Put a relevance floor on similar tickets that the analyst can see, e.g.
-  "matched on: same problem." Hide anything that only matched on client.
-- Decide whether this belongs to One Pane or to **Cole's AI CTRL**. His system
-  already reads SMC across tickets with role-aware access and audit logging.
-  "Find similar tickets" may be better as a query to his `/api/query` from the
-  Ask tab than as a second search implementation here.
-- One piece stays live and should keep staying live: **live tickets are never
-  given the invented mock resolved tickets as precedent** (`server/knowledge.js`).
-  Before this work they were, which cited ticket numbers that don't exist.
+---
+
+## SMC ticket history: follow-ups
+
+**Status:** the core is built (2026-09-25). Every live draft now reads the
+tickets SMC links to this one and searches closed SMC tickets for similar
+ones. See "Similar tickets and SMC links" in [README.md](README.md) for how it
+works, and [`docs/smc-api/README.md`](docs/smc-api/README.md) for the filter
+grammar it relies on. Two things broke the 2026-09-23 version, and both are
+fixed: dates are now full ISO datetimes, and "related" means only tickets SMC
+itself links, never "open for the same client".
+
+Grant's rules, which the code follows:
+
+- **Successful** means closed, not escalated, and not reopened *by a person*.
+  SMC's `task-end-hold` automation sets `reopened_at` whenever a hold expires,
+  so a reopen only counts when `reopened_by` is a person. This is provisional
+  until there is a CSAT-style signal.
+- **Similar** means the same problem type from any client. It is labelled with
+  its client, not redacted.
+- **Every ticket searches.** Notification and maintenance tickets are included.
+  Automated tickets are not excluded; near-identical copies of one subject are
+  collapsed to two.
+- **Client conversations rank higher.** A ticket where analysts went back and
+  forth with the customer carries the process worth following.
+- **Linked tickets are always read**, whatever their state, and the model says
+  how each one relates.
+- **Confidence.** Only a ticket the model judges *identical* raises
+  confidence (low to medium, medium to high). A *similar* one is context only.
+
+Still to do:
+
+- **Ask tab.** "How did we handle this last time?" is not answerable yet. Ask
+  skips the history search, and its prompt says it can see only this ticket.
+  Either give it the same precedent, with the prompt changed to match, or
+  route the question to Cole's `/api/query`.
+- **Success signal.** `helpful_counts` on tickets and notes is rarely set
+  (8 of ~1,000 Zerto tickets in 12 months). A CSAT-style signal needs another
+  source.
+- **Knowledge-gap queue.** When `kb.gap` is true and an identical precedent
+  exists, that pair is exactly the evidence a suggested TechDoc needs (see the
+  first section).
+- **Rate limits.** Unknown. A draft costs about 7 SMC calls, two list queries
+  at a time, cached for 10 minutes. Ask Expedient IT for a limit before this
+  runs for the whole team.
 
 ---
 

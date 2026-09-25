@@ -20,8 +20,14 @@ const {
 } = mockPack;
 const { buildContext } = require('../server/context');
 const {
-  generateDraft, getSuggestions, activeProviderName, resolveProvider,
+  generateDraft, getSuggestions, activeProviderName, resolveProvider, techdocSources, relevancePct,
 } = require('../server/generate');
+const { parseVerdicts } = require('../server/relevance');
+const { selectThread, threadEvidence } = require('../server/thread');
+const { relevantExcerpt } = require('../server/excerpt');
+const { checkDraftFacts } = require('../server/grounding');
+const { recordVote, applyFeedback } = require('../server/feedback');
+const { parseExpansion } = require('../server/confluence/expand');
 const { sanitizeHtml, toPlainText, ALLOWED_TAGS } = require('../server/sanitize');
 const { suggestNextSteps } = require('../server/suggestions');
 const mockProvider = require('../onepane-mock/provider/mock');
@@ -35,6 +41,10 @@ const { answerQuestion } = require('../server/ask');
 // Pin the knowledge source: a shell that exports Confluence credentials must
 // not turn the test suite into live wiki traffic. Confluence tests opt in.
 process.env.ONEPANE_KB_SOURCE = 'mock';
+
+// Source votes go to a fresh temp dir, never the developer's own .onepane/.
+const FEEDBACK_DIR = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'onepane-test-'));
+process.env.ONEPANE_DATA_DIR = FEEDBACK_DIR;
 
 mockPack.installMockPack();
 
@@ -218,6 +228,75 @@ function fakeZertoConfluence(calls) {
     if (u.pathname === '/wiki/rest/api/search') return fakeResponse(200, { results: pages.map(hit) });
     const m = /^\/wiki\/api\/v2\/pages\/(\d+)$/.exec(u.pathname);
     if (m && byId.has(m[1])) return fakeResponse(200, byId.get(m[1]));
+    return fakeResponse(404, { message: 'nope' });
+  };
+}
+
+/**
+ * Shaped like the live FIM ticket (#3810007), invented details: the subject
+ * carries the client name, the latest message a meeting link, and only the AI
+ * summary says what the problem is.
+ */
+const FIM_TICKET = {
+  id: '9990050',
+  subject: 'InTransit, LLC - Elastic Monitoring -FIM',
+  client: 'InTransit, LLC',
+  problem: 'Elastic as a Service',
+  notes: [
+    {
+      author: 'SMC AI Summary',
+      role: 'ai',
+      at: '2026-09-20T10:00:00Z',
+      body: '<b>Problem Summary</b>: A backlog of unprocessed files in specific directories; the client wants Elastic File Integrity Monitoring (FIM) alerts on it.<br>'
+        + '<b>Client Sentiment</b>: Concerned.<br><b>Technical Details</b>: Paths under \\\\\\\\srv-store02\\\\Queue need file counts and age alerts.',
+    },
+    {
+      author: 'Steven',
+      role: 'client',
+      at: '2026-09-21T10:00:00Z',
+      body: 'Can you join? https://teams.microsoft.com/meet/249463907060271?p=354zm74Wi9fsLEg35s',
+    },
+  ],
+};
+
+/**
+ * A fake Confluence that also answers the title-count queries: "elastic" is
+ * in a fifth of all titles, so it is broad, while "fim" and "integrity" are
+ * rare. Search returns the APM page and the FIM page for every query.
+ */
+function fakeFimConfluence() {
+  const pages = {
+    301: { id: '301', title: 'SOP - AI CTRL - Understanding Elastic APM', body: 'APM traces and service maps.' },
+    302: { id: '302', title: 'SOP - Elastic File Integrity Monitoring Setup', body: 'Enable the FIM integration on the agent policy.' },
+  };
+  const full = (p) => ({
+    ...p,
+    version: { createdAt: '2026-08-01T10:00:00Z' },
+    labels: { results: [] },
+    body: { storage: { value: `<p>${p.body}</p>` } },
+    _links: { webui: `/spaces/TO/pages/${p.id}` },
+  });
+  const hit = (p) => ({
+    content: { id: p.id, title: p.title },
+    title: p.title,
+    resultGlobalContainer: { title: 'Technical Operations', displayUrl: '/spaces/TO' },
+    lastModified: '2026-08-01T10:00:00Z',
+  });
+  const TITLE_COUNTS = { elastic: 200, fim: 1, integrity: 3, monitoring: 5 };
+
+  return async (url) => {
+    const u = new URL(url);
+    if (u.pathname === '/wiki/rest/api/search') {
+      const cql = u.searchParams.get('cql');
+      if (u.searchParams.get('limit') === '1') {
+        const m = /^type = page AND title ~ "([a-z0-9]+)\*"/.exec(cql);
+        const totalSize = m ? (TITLE_COUNTS[m[1]] ?? 2) : 1000;
+        return fakeResponse(200, { results: [], totalSize });
+      }
+      return fakeResponse(200, { results: Object.values(pages).map(hit) });
+    }
+    const m = /^\/wiki\/api\/v2\/pages\/(\d+)$/.exec(u.pathname);
+    if (m && pages[m[1]]) return fakeResponse(200, full(pages[m[1]]));
     return fakeResponse(404, { message: 'nope' });
   };
 }
@@ -891,10 +970,13 @@ async function main() {
       // Only the pre-ranked best get a full fetch, not every hit.
       const fetched = calls.filter((c) => c.url.pathname.startsWith('/wiki/api/v2/pages/'));
       assert.ok(fetched.length <= 8, `fetched ${fetched.length} pages`);
-      // Pre-rank order: the upgrade pages first, the off-topic ones last.
+      // Pre-rank order: the upgrade pages first. The off-topic ones share no
+      // term with the ticket in their titles, so the title check drops them.
       const order = found.docs.map((d) => d.title);
       assert.ok(/Upgrade/.test(order[0]) && /Upgrade/.test(order[1]), order.join(' | '));
-      assert.ok(order.slice(-2).every((t) => /Juniper|Pure Storage/.test(t)), order.join(' | '));
+      assert.ok(!order.some((t) => /Juniper|Pure Storage/.test(t)), order.join(' | '));
+      const rejected = found.rejected.map((r) => r.title);
+      assert.ok(rejected.some((t) => /Juniper/.test(t)) && rejected.some((t) => /Pure Storage/.test(t)), rejected.join(' | '));
 
       const { docs } = await retrieveKnowledge(ctx, { asOf: AS_OF, kbSource: 'confluence' });
       const titles = docs.map((d) => d.doc.title);
@@ -911,6 +993,204 @@ async function main() {
       assert.ok(doc, 'no techdoc source');
       assert.match(doc.detail, /over 2 years old/);
     }));
+  });
+
+  await test('search terms skip links, meeting ids, and the client name, and read the AI summary', () => {
+    const ctx = buildContext(FIM_TICKET, { asOf: AS_OF });
+    const terms = queryTerms(ctx);
+    assert.ok(terms.includes('fim') && terms.includes('integrity'), terms.join(' '));
+    assert.ok(!terms.some((t) => t.includes('.') || /teams|intransit|354zm/.test(t)), terms.join(' '));
+    // The topic only the summary names.
+    assert.ok(terms.includes('unprocessed'), terms.join(' '));
+  });
+
+  await test('a page whose title shares only a broad term is dropped, with the reason', async () => {
+    await withConfluenceEnv({ CONFLUENCE_SPACES: 'FIMTEST' }, () => withFetch(fakeFimConfluence(), async () => {
+      const found = await searchForContext(buildContext(FIM_TICKET, { asOf: AS_OF }));
+      assert.ok(found.broadTerms.includes('elastic'), found.broadTerms.join(' '));
+      const titles = found.docs.map((d) => d.title);
+      assert.deepStrictEqual(titles, ['SOP - Elastic File Integrity Monitoring Setup'], titles.join(' | '));
+      const apm = found.rejected.find((r) => /APM/.test(r.title));
+      assert.ok(apm && /only broad terms.*elastic/.test(apm.reason), JSON.stringify(found.rejected));
+    }));
+  });
+
+  await test('the relevance judge hides unrelated SOPs, labels partial ones, and caps confidence', async () => {
+    let seen = null;
+    const judge = async ({ system, user }) => {
+      seen = { system, user };
+      return { text: '```json\n{"verdicts":[{"id":"C1","verdict":"partial","reason":"Zerto upgrades, not this VPG question"},'
+        + '{"id":"C2","verdict":"unrelated","reason":"ZVMA troubleshooting"},{"id":"C9","verdict":"direct"}]}\n```' };
+    };
+    await withConfluenceEnv({}, () => withFetch(fakeZertoConfluence([]), async () => {
+      const ctx = buildContext(ZERTO_TICKET, { asOf: AS_OF });
+      const { docs, kb, confidence } = await retrieveKnowledge(ctx, { asOf: AS_OF, kbSource: 'confluence', judge });
+      assert.ok(seen && seen.user.includes('<<<BEGIN_PAGE>>>') && seen.user.includes('<<<BEGIN_TICKET>>>'), 'judge input not fenced');
+      // C9 does not exist; any candidate without a verdict is hidden.
+      assert.ok(docs.length >= 1 && docs.every((d) => d.relevance.verdict === 'partial'), JSON.stringify(docs.map((d) => d.relevance)));
+      assert.ok(kb.rejected.some((r) => r.stage === 'model' && r.reason === 'ZVMA troubleshooting'), JSON.stringify(kb.rejected));
+      assert.strictEqual(kb.relevance.direct, 0);
+      assert.notStrictEqual(confidence.level, 'high');
+      assert.ok(confidence.reasons.some((r) => /partial matches/.test(r)), confidence.reasons.join(' | '));
+    }));
+  });
+
+  await test('when every SOP is judged unrelated, none is cited and the gap is flagged', async () => {
+    const judge = async () => ({ text: '{"verdicts":[{"id":"C1","verdict":"unrelated","reason":"x"},{"id":"C2","verdict":"unrelated","reason":"y"},{"id":"C3","verdict":"unrelated","reason":"z"},{"id":"C4","verdict":"unrelated","reason":"w"}]}' });
+    await withConfluenceEnv({}, () => withFetch(fakeZertoConfluence([]), async () => {
+      const ctx = buildContext({ ...ZERTO_TICKET, id: '9990043' }, { asOf: AS_OF });
+      const { docs, kb, confidence } = await retrieveKnowledge(ctx, { asOf: AS_OF, kbSource: 'confluence', judge });
+      assert.strictEqual(docs.length, 0);
+      assert.strictEqual(kb.gap, true);
+      assert.strictEqual(confidence.shouldAbstain, true);
+      assert.ok(confidence.reasons.some((r) => /judged not relevant/.test(r)), confidence.reasons.join(' | '));
+    }));
+  });
+
+  await test('a failed relevance check keeps the lexical results, unverified and capped at medium', async () => {
+    const judge = async () => { throw new Error('gateway down'); };
+    await withConfluenceEnv({}, () => withFetch(fakeZertoConfluence([]), async () => {
+      const ctx = buildContext({ ...ZERTO_TICKET, id: '9990044' }, { asOf: AS_OF });
+      const { docs, kb, confidence } = await retrieveKnowledge(ctx, { asOf: AS_OF, kbSource: 'confluence', judge });
+      assert.ok(docs.length >= 1 && docs.length <= 3);
+      assert.ok(kb.warnings.some((w) => /Relevance check unavailable \(gateway down\)/.test(w)), kb.warnings.join(' | '));
+      assert.notStrictEqual(confidence.level, 'high');
+      assert.strictEqual(kb.gap, false);
+    }));
+  });
+
+  await test('relevance verdicts parse through fences and think blocks, and junk is null', () => {
+    const v = parseVerdicts('<think>hmm</think>Sure: {"verdicts":[{"id":"c2","verdict":"Direct","reason":"ok"},{"id":"C7","verdict":"direct"},{"id":"C1","verdict":"maybe"}]}', 3);
+    assert.deepStrictEqual([...v.entries()], [[1, { verdict: 'direct', reason: 'ok' }]]);
+    assert.strictEqual(parseVerdicts('no json here', 3), null);
+    assert.strictEqual(parseVerdicts('{"verdicts":[]}', 3), null);
+  });
+
+  await test('a draft shows the verdict under each cited SOP', async () => {
+    const judge = async () => ({ text: '{"verdicts":[{"id":"C1","verdict":"direct","reason":"ZVM upgrade steps"}]}' });
+    await withConfluenceEnv({}, () => withFetch(fakeZertoConfluence([]), async () => {
+      const ctx = buildContext({ ...ZERTO_TICKET, id: '9990045' }, { asOf: AS_OF });
+      const { docs } = await retrieveKnowledge(ctx, { asOf: AS_OF, kbSource: 'confluence', judge });
+      const [src] = techdocSources(docs);
+      assert.strictEqual(src.relevance, 'direct');
+      assert.strictEqual(src.why, 'Covers this ticket: ZVM upgrade steps');
+    }));
+  });
+
+  await test('relevance percent: the verdict sets the band, an unchecked page never reads above 55%', () => {
+    assert.strictEqual(relevancePct(12, 'direct'), 100);
+    assert.strictEqual(relevancePct(0, 'direct'), 70);
+    assert.ok(relevancePct(6, 'partial') >= 35 && relevancePct(20, 'partial') <= 65);
+    assert.strictEqual(relevancePct(50, null), 55);
+  });
+
+  await test('expansion phrases become exact-phrase queries, and terms are stemmed for prefix search', async () => {
+    const calls = [];
+    const expand = async () => ({ text: '{"phrases":["File Integrity Monitoring","x"],"terms":["fim","elastic","bad\\"term"]}' });
+    await withConfluenceEnv({ CONFLUENCE_SPACES: 'EXPTEST' }, () => withFetch(async (url, init) => {
+      calls.push(new URL(url));
+      return fakeFimConfluence()(url, init);
+    }, async () => {
+      const found = await searchForContext(buildContext({ ...FIM_TICKET, id: '9990051' }, { asOf: AS_OF }), { expand });
+      assert.deepStrictEqual(found.expansion, { phrases: ['file integrity monitoring'], terms: ['fim', 'elastic'] });
+      const cqls = calls.map((u) => u.searchParams.get('cql')).filter(Boolean);
+      assert.ok(cqls.some((q) => q.includes('text ~ "\\"file integrity monitoring\\""')), cqls.join('\n'));
+      assert.ok(cqls.some((q) => q.includes('"monitor*"')) && !cqls.some((q) => q.includes('"monitoring*"')), cqls.join('\n'));
+    }));
+    assert.strictEqual(parseExpansion('nope'), null);
+  });
+
+  await test('a long thread is cut to the notes that matter, internal ones marked, HTML and quoted mail removed', () => {
+    const notes = [{ author: 'Client', role: 'client', at: '2026-06-01T00:00:00Z', body: '<p>Please migrate us to EEC2.</p>' }];
+    for (let i = 0; i < 40; i++) {
+      notes.push({ author: 'Analyst', role: 'analyst', at: `2026-07-${String(i % 28 + 1).padStart(2, '0')}T00:00:00Z`, body: `<p>Scheduling update number ${'x'.repeat(i % 3)} for the cutover.</p>` });
+    }
+    notes.splice(20, 0, {
+      author: 'Carson', role: 'analyst', visibility: 'Internal', at: '2026-07-20T00:00:00Z', body: 'Opened change control 644633 to stop the default route on T0.',
+    });
+    notes.push({
+      author: 'Michael', role: 'client', at: '2026-08-05T00:00:00Z',
+      body: 'Still seeing routing issues on the spoke sites.<br>On Mon, Aug 4, 2026 Carson wrote:<br>' + 'old quoted text '.repeat(200),
+    });
+    const ctx = buildContext({ id: '9990070', subject: 'Service Transition', notes }, { asOf: AS_OF });
+    const sel = selectThread(ctx);
+    assert.ok(sel.included <= 12 && sel.omitted >= 29, JSON.stringify({ included: sel.included, omitted: sel.omitted }));
+    assert.ok(sel.text.includes('Please migrate us to EEC2'), 'opening request dropped');
+    assert.ok(sel.text.includes('(EXPEDIENT, INTERNAL NOTE): Opened change control 644633'), 'key internal note missing or unmarked');
+    assert.ok(sel.text.includes('Still seeing routing issues') && sel.text.includes('[quoted history removed]'));
+    assert.ok(!sel.text.includes('old quoted text') && !/<p>|<br>/.test(sel.text));
+    assert.ok(/\[\.\.\. \d+ notes omitted/.test(sel.text));
+    assert.ok(sel.chars < 12000);
+  });
+
+  await test('with no SOP, a thread with concrete facts drafts at medium instead of abstaining', async () => {
+    const ticket = {
+      id: '9990071',
+      subject: 'Routing after migration',
+      notes: [
+        { author: 'Michael', role: 'client', at: '2026-08-01T00:00:00Z', body: 'Spoke sites lost the default route.' },
+        { author: 'Carson', role: 'analyst', at: '2026-08-02T00:00:00Z', body: 'Change control 644633 is scheduled for 8/3 to fix the T0 advertisement.' },
+        { author: 'Michael', role: 'client', at: '2026-08-04T00:00:00Z', body: 'Is it done?' },
+      ],
+    };
+    const ctx = buildContext(ticket, { asOf: AS_OF });
+    assert.ok(threadEvidence(ctx).grounded);
+    // A wiki with nothing on it: no SOP, and no outage either.
+    const empty = async () => fakeResponse(200, { results: [], totalSize: 0 });
+    const { confidence } = await withConfluenceEnv({ CONFLUENCE_SPACES: 'EMPTY' }, () => withFetch(empty, () => retrieveKnowledge(ctx, {
+      asOf: AS_OF, kbSource: 'confluence', ticketOrigin: 'inline',
+    })));
+    assert.strictEqual(confidence.level, 'medium');
+    assert.strictEqual(confidence.grounding, 'thread');
+    assert.strictEqual(confidence.shouldAbstain, false);
+    const { buildUserMessage } = require('../server/providers/claude');
+    assert.ok(buildUserMessage(ctx, [], [], confidence).includes('no internal SOP covers this ticket'));
+
+    // A first contact with nothing concrete still asks questions.
+    const vague = buildContext({ id: '9990072', subject: 'Help', notes: [{ author: 'C', role: 'client', at: '2026-08-01T00:00:00Z', body: 'It is broken.' }] }, { asOf: AS_OF });
+    assert.strictEqual(threadEvidence(vague).grounded, false);
+  });
+
+  await test('a long SOP is cut to its relevant sections, keeping the opening', () => {
+    const body = ['Purpose: how to upgrade Zerto in EEC.', ...Array.from({ length: 30 }, (_, i) => `Unrelated appendix section ${i} about licensing and billing codes and invoices.`),
+      'VPG replication pauses while each VRA upgrades; VPGs resync afterwards.',
+      ...Array.from({ length: 30 }, (_, i) => `Rollback appendix ${i} for storage arrays and firmware.`)].join('\n');
+    const out = relevantExcerpt(body, 'Will the Zerto upgrade impact VPG replication?', 'partial');
+    assert.ok(out.length <= 1300, `${out.length}`);
+    assert.ok(out.startsWith('Purpose: how to upgrade Zerto'), out.slice(0, 80));
+    assert.ok(out.includes('VPG replication pauses'), out);
+    assert.ok(out.includes('[...]'));
+    assert.strictEqual(relevantExcerpt('short page', 'x', 'direct'), 'short page');
+  });
+
+  await test('the fact check flags draft values found nowhere in the ticket or SOPs', () => {
+    const ticket = { id: '9990073', subject: 'Upgrade CHASEBRXOWM-VROPS01 to 8.18.7', notes: [{ author: 'A', role: 'analyst', body: 'Change 644633 approved.' }] };
+    const docs = [{ doc: { title: 'MOP', body: 'Use 10.0.0.5 for the appliance.' } }];
+    const draft = '<p>We will upgrade <code>CHASEBRXOWM-VROPS01</code> to 8.18.7 under change 644633 via 10.0.0.5, then 10.0.0.9, build 8.18.9, ticket 777777.</p>';
+    const { unsupported, checked } = checkDraftFacts(draft, ticket, docs);
+    const values = unsupported.map((u) => u.value).sort();
+    assert.deepStrictEqual(values, ['10.0.0.9', '777777', '8.18.9'], JSON.stringify(unsupported));
+    assert.ok(checked >= 6);
+  });
+
+  await test('a down-voted SOP is hidden on that ticket, and across a problem type after two tickets', () => {
+    const ranked = [{ doc: { id: 'TO-9', title: 'SOP - Off topic' }, score: 5 }, { doc: { id: 'TO-8', title: 'SOP - Good' }, score: 4 }];
+    assert.ok(recordVote({ ticketId: '9990080', docId: 'TO-9', vote: 'down', problem: 'Widgets' }).ok);
+    let r = applyFeedback({ ticketId: '9990080', problem: 'Widgets' }, ranked);
+    assert.deepStrictEqual(r.docs.map((d) => d.doc.id), ['TO-8']);
+    assert.match(r.rejected[0].reason, /marked it not relevant to this ticket/);
+
+    // One ticket's vote does not decide it for everyone; two do.
+    r = applyFeedback({ ticketId: '9990082', problem: 'Widgets' }, ranked);
+    assert.ok(r.docs.some((d) => d.doc.id === 'TO-9'));
+    recordVote({ ticketId: '9990081', docId: 'TO-9', vote: 'down', problem: 'Widgets' });
+    r = applyFeedback({ ticketId: '9990082', problem: 'Widgets' }, ranked);
+    assert.ok(!r.docs.some((d) => d.doc.id === 'TO-9') && /similar tickets/.test(r.rejected[0].reason));
+
+    recordVote({ ticketId: '9990083', docId: 'TO-8', vote: 'up', problem: 'Widgets' });
+    r = applyFeedback({ ticketId: '9990083', problem: 'Widgets' }, ranked);
+    assert.ok(r.docs[0].endorsed && r.docs[0].score > 4);
+    assert.strictEqual(recordVote({ ticketId: 'bad id!', docId: 'TO-9', vote: 'down' }).ok, false);
   });
 
   await test('Ask is grounded in Confluence too: the question anchors the search, sources come back linked', async () => {
@@ -1342,9 +1622,327 @@ async function main() {
         assert.strictEqual(res.status, 200, JSON.stringify(res.body));
       });
     });
+
+    await test('HTTP: a source vote is stored as metadata, and junk is refused', async () => {
+      const ok = await call('POST', '/api/feedback', {}, {
+        ticketId: '9990060', docId: 'TO-1', title: 'SOP - X', vote: 'down', problem: 'Zerto', body: 'must not be stored',
+      });
+      assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
+      const bad = await call('POST', '/api/feedback', {}, { ticketId: '9990060', docId: 'TO-1', vote: 'meh' });
+      assert.strictEqual(bad.status, 400);
+      const saved = require('fs').readFileSync(require('path').join(FEEDBACK_DIR, 'feedback.jsonl'), 'utf8');
+      assert.ok(saved.includes('"docId":"TO-1"') && !saved.includes('must not be stored'), saved);
+    });
+
+    /** The raw response, for NDJSON. */
+    const callRaw = (pathname, body) => new Promise((resolve, reject) => {
+      const payload = JSON.stringify(body);
+      const req = require('http').request({
+        host: '127.0.0.1', port, method: 'POST', path: pathname, headers: { 'Content-Type': 'application/json' },
+      }, (res) => {
+        let text = '';
+        res.on('data', (c) => { text += c; });
+        res.on('end', () => resolve({ status: res.statusCode, type: res.headers['content-type'], text }));
+      });
+      req.on('error', reject);
+      req.write(payload);
+      req.end();
+    });
+
+    await test('HTTP: a draft with progress on streams its stages, then the result', async () => {
+      const res = await callRaw('/api/generate', { ticketId: '3714582', provider: 'mock', progress: true });
+      assert.match(res.type, /ndjson/);
+      const lines = res.text.trim().split('\n').map((l) => JSON.parse(l));
+      const last = lines[lines.length - 1];
+      assert.strictEqual(last.type, 'result');
+      assert.strictEqual(last.status, 200);
+      assert.ok(last.data.draftHtml, 'no draft in the result line');
+      const progress = lines.filter((l) => l.type === 'progress');
+      assert.ok(lines.slice(0, -1).every((l) => l.type === 'progress'), 'result was not the last line');
+      const stages = [...new Set(progress.map((p) => p.stage))];
+      for (const s of ['ticket', 'techdocs', 'draft', 'factcheck']) assert.ok(stages.includes(s), `no ${s} stage: ${stages.join(',')}`);
+      for (const s of stages) {
+        const events = progress.filter((p) => p.stage === s);
+        assert.ok(events.some((e) => e.state !== 'active'), `${s} never finished`);
+      }
+      // Stage details are counts, never ticket content.
+      const ticketText = JSON.stringify(getTicket('3714582').notes.map((n) => n.body));
+      for (const p of progress) if (p.detail.length > 12) assert.ok(!ticketText.includes(p.detail), `ticket text in a stage detail: ${p.detail}`);
+    });
+
+    await test('HTTP: without the progress flag the response is one JSON body, as before', async () => {
+      const res = await callRaw('/api/generate', { ticketId: '3714582', provider: 'mock' });
+      assert.match(res.type, /application\/json/);
+      assert.ok(JSON.parse(res.text).draftHtml);
+    });
+
+    await test('HTTP: a streamed request that fails reports the error in its result line', async () => {
+      const res = await callRaw('/api/generate', { ticketId: '9999999', progress: true });
+      const lines = res.text.trim().split('\n').map((l) => JSON.parse(l));
+      const last = lines[lines.length - 1];
+      assert.strictEqual(last.type, 'result');
+      assert.strictEqual(last.status, 400);
+      assert.match(last.data.error, /9999999/);
+      assert.ok(lines.some((l) => l.stage === 'ticket' && l.state === 'error'));
+    });
   } finally {
     server.close();
   }
+
+  console.log('\nSMC ticket history');
+
+  const history = require('../server/smc/history');
+  const { findPrecedentFor, parseJudgement } = require('../server/precedent');
+  const { assessConfidence } = require('../server/retrieval');
+  const { buildUserMessage } = require('../server/providers/claude');
+
+  /** The open ticket: a customer asking about a Zerto upgrade, as the SMC adapter maps it. */
+  const zertoCtx = () => buildContext({
+    id: '5000001',
+    subject: 'Zerto upgrade failed on our ZVM',
+    client: 'Acme Dental',
+    clientId: 11,
+    category: 'Operations Support',
+    categoryId: 5,
+    problem: 'Disaster Recovery as a Service',
+    problemId: 331,
+    notes: [{
+      author: 'Pat Moss', role: 'client', at: '2026-09-20T09:00:00Z', body: 'The Zerto upgrade to 10.8 failed on our ZVM last night.',
+    }],
+  }, { asOf: '2026-09-25T12:00:00Z' });
+
+  const smcRow = (id, subject, extra = {}) => ({
+    id,
+    subject,
+    status: 'Closed',
+    source: 'Client SMC',
+    client: { id: 20 + id % 7, name: `Client ${id}` },
+    problem: { id: 331, name: 'Disaster Recovery as a Service' },
+    category: { id: 5, name: 'Operations Support' },
+    created_by: { username: 'someone@client.test' },
+    closed_at: '2026-09-01T10:00:00-04:00',
+    is_escalated: false,
+    reopened_at: null,
+    reopened_by: null,
+    note_count: 8,
+    internal_summary: `Problem Summary: ${subject}. Zerto ZVM upgrade.`,
+    body: subject,
+    ...extra,
+  });
+
+  /** A fake SMC v3: list, related, one ticket, and batched notes. Records every URL. */
+  function fakeSmc({ related = [], rows = null } = {}) {
+    const calls = [];
+    const list = rows || [
+      smcRow(6001, 'Zerto ZVM upgrade failed - rollback'),
+      smcRow(6002, 'Zerto upgrade stuck at VRA step'),
+      // Reopened by a person: the first fix did not hold.
+      smcRow(6003, 'Zerto upgrade failed again', { reopened_at: '2026-08-01T00:00:00Z', reopened_by: { username: 'jane.analyst' } }),
+      // Reopened by the hold-expiry automation: still good precedent.
+      smcRow(6004, 'Zerto upgrade postponed then done', { reopened_at: '2026-08-01T00:00:00Z', reopened_by: { username: 'task-end-hold' } }),
+      smcRow(6005, 'Zerto upgrade escalated', { is_escalated: true }),
+      smcRow(5000001, 'Zerto upgrade failed on our ZVM'),
+    ];
+    const notes = [
+      { ticket: { id: 6001 }, created_at: '2026-08-30T09:00:00Z', source: 'Client SMC', visibility: 'All', created_by: { username: 'a@client.test' }, body: 'Our Zerto upgrade failed half way, please help us.' },
+      { ticket: { id: 6001 }, created_at: '2026-08-30T10:00:00Z', source: 'SMC', visibility: 'All', created_by: { username: 'tracy.fife' }, body: 'We rolled the ZVM back to 10.0 and will retry in the window.' },
+      { ticket: { id: 6001 }, created_at: '2026-08-30T11:00:00Z', source: 'Client SMC', visibility: 'All', created_by: { username: 'a@client.test' }, body: 'Thanks, the retry window on Saturday works for us.' },
+      { ticket: { id: 6001 }, created_at: '2026-08-31T11:00:00Z', source: 'SMC', visibility: 'Internal', created_by: { username: 'tracy.fife' }, body: 'Cleared the stale VRA on host esx-acme-07 before retrying.' },
+    ];
+    const respond = (url) => {
+      const u = new URL(url);
+      const p = u.pathname.replace(/^\/v3\//, '');
+      let body;
+      if (p === 'tickets') body = { page: 1, per_page: 40, total: list.length, data: list };
+      else if (/^tickets\/\d+\/related$/.test(p)) body = { page: 1, total: related.length, data: related };
+      else if (/^tickets\/\d+$/.test(p)) body = smcRow(Number(p.split('/')[1]), 'Parent change: Zerto platform upgrade', { status: 'Open', closed_at: null });
+      else if (p === 'notes') body = { page: 1, total: notes.length, data: notes };
+      else return { ...fakeResponse(404, { error: 'no' }), headers: { get: () => 'application/json' } };
+      return { ...fakeResponse(200, body), headers: { get: () => 'application/json' } };
+    };
+    const fake = async (url) => { calls.push(String(url)); return respond(String(url)); };
+    return { fake, calls };
+  }
+
+  const SMC_ENV = {
+    SMC_API_BASE_URL: 'https://smc.test/v3', SMC_API_USER: '', SMC_API_PASS: 'test-token', ONEPANE_CREDENTIALS: undefined,
+  };
+
+  await test('history queries use SMC filter grammar: ISO datetimes, comma AND, LIKE substrings', () => {
+    const { queries } = history.buildQueries(zertoCtx(), { asOf: '2026-09-25T12:00:00Z' });
+    assert.ok(queries.length >= 2 && queries.length <= 4, `${queries.length} queries`);
+    for (const q of queries) {
+      assert.match(q.filters, /closed_at gt '2025-09-25T\d\d:\d\d:\d\dZ'/, q.filters);
+      assert.doesNotMatch(q.filters, / (and|or) /i, `AND/OR keywords are a 400: ${q.filters}`);
+      assert.doesNotMatch(q.filters, /not like/, `"not like" is silently ignored: ${q.filters}`);
+    }
+    assert.ok(queries.some((q) => q.filters.startsWith('problem.id eq 331')), 'no same-problem query');
+    assert.ok(queries.some((q) => /subject like '%zerto%'/.test(q.filters)));
+  });
+
+  await test('a hostile name cannot add a filter clause', () => {
+    assert.strictEqual(history.filterValue("x', client.id gte '0"), 'x client.id gte 0');
+    const ctx = { ...zertoCtx(), problemId: null, problem: "Zerto', client.id gte '0" };
+    for (const q of history.buildQueries(ctx).queries) assert.ok(!q.filters.includes("gte '0"), q.filters);
+  });
+
+  await test('successful precedent: an automated reopen is fine, a person reopening or an escalation is not', () => {
+    const ok = history.toCandidate(smcRow(1, 'a', { reopened_at: '2026-01-01T00:00:00Z', reopened_by: { username: 'task-end-hold' } }));
+    const reopened = history.toCandidate(smcRow(2, 'b', { reopened_at: '2026-01-01T00:00:00Z', reopened_by: { username: 'jane.analyst' } }));
+    const escalated = history.toCandidate(smcRow(3, 'c', { is_escalated: true }));
+    assert.deepStrictEqual([ok, reopened, escalated].map(history.isSuccessful), [true, false, false]);
+  });
+
+  await test('a back-and-forth with the customer counts turns; an untouched notice counts none', () => {
+    const n = (source, username, body = 'A substantive note about the upgrade window and the rollback plan.') => ({
+      source, created_by: { username }, visibility: 'All', body,
+    });
+    assert.strictEqual(history.exchangeTurns([n('Client SMC', 'a@x.test'), n('SMC', 'tracy.fife'), n('Client SMC', 'a@x.test'), n('SMC', 'joe.litz')]), 3);
+    assert.strictEqual(history.exchangeTurns([n('API', 'retool'), n('API', 'task-auto-close')]), 0);
+  });
+
+  await test('per-client copies of one notice compare as the same subject', () => {
+    const a = history.subjectWords('Zerto 10.8 Upgrade Notice - ITU Absorb Tech', 'ITU AbsorbTech');
+    const b = history.subjectWords('Zerto 10.8 Upgrade Notice - QSLWM', 'Quilling, Selander, Lownds, Winslett & Moser');
+    const c = history.subjectWords('Zerto ZVM Upgrade to 10.0U6', 'Universal Leaf');
+    assert.ok(history.sameSubject(a, b), 'notice variants not collapsed');
+    assert.ok(!history.sameSubject(a, c), 'a different upgrade ticket was collapsed');
+  });
+
+  await test('lookup reads linked tickets, filters precedent on our side, and batches thread reads', async () => {
+    history.resetCaches();
+    const related = [{
+      id: 1, a_ticket: { id: 5000001, subject: 'Zerto upgrade failed on our ZVM' }, b_ticket: { id: 7001, subject: 'Parent change' },
+      ticket_relationship_type: { id: 1, name: 'Child of' }, created_by: { username: 'joe.litz' }, created_at: '2026-09-20T00:00:00Z',
+    }];
+    const { fake, calls } = fakeSmc({ related });
+    const r = await withEnv(SMC_ENV, () => withFetch(fake, () => history.lookup(zertoCtx(), { asOf: '2026-09-25T12:00:00Z' })));
+    assert.deepStrictEqual(r.linked.map((l) => [l.id, l.relationship, l.status]), [['7001', 'Child of', 'Open']]);
+    const ids = r.candidates.map((c) => c.ticket.id);
+    assert.ok(ids.includes('6001') && ids.includes('6004'), ids.join(','));
+    for (const bad of ['6003', '6005', '5000001', '7001']) assert.ok(!ids.includes(bad), `#${bad} should not be precedent`);
+    assert.strictEqual(ids[0], '6001', 'the ticket with a customer conversation should lead');
+    assert.strictEqual(r.candidates[0].ticket.exchange, 2);
+    assert.strictEqual(calls.filter((u) => /\/v3\/notes\?/.test(u)).length, 1, 'threads not batched into one notes read');
+    assert.ok(calls.length <= 8, `${calls.length} SMC calls for one draft`);
+    for (const u of calls) assert.ok(!/order_by=.*&.*order_by/.test(u));
+  });
+
+  await test('the precedent check hides unrelated tickets, and describes linked ones', async () => {
+    history.resetCaches();
+    const related = [{
+      id: 1, a_ticket: { id: 7001, subject: 'Parent change' }, b_ticket: { id: 5000001, subject: 'x' }, ticket_relationship_type: { name: 'Parent of' },
+    }];
+    const { fake } = fakeSmc({ related });
+    const judge = async ({ user }) => {
+      const pIds = [...user.matchAll(/\[(P\d+)\] #(\d+)/g)].map((m) => [m[1], m[2]]);
+      return {
+        text: JSON.stringify({
+          candidates: pIds.map(([id, tid]) => ({ id, verdict: tid === '6001' ? 'identical' : 'unrelated', reason: tid === '6001' ? 'same failed ZVM upgrade' : 'different task' })),
+          linked: [{ id: 'L1', relation: 'The platform upgrade change this ticket is part of' }],
+        }),
+      };
+    };
+    const found = await withEnv({ ...SMC_ENV, ONEPANE_PRECEDENT_SOURCE: undefined }, () => withFetch(fake, () => (
+      findPrecedentFor(zertoCtx(), { judge, asOf: '2026-09-25T12:00:00Z', isMockTicket: false }))));
+    assert.deepStrictEqual(found.precedent.map((p) => p.ticket.id), ['6001']);
+    assert.strictEqual(found.match, 'identical');
+    assert.ok(found.history.rejected.length >= 1 && found.history.rejected.every((r) => r.stage === 'model'));
+    assert.strictEqual(found.linked[0].relation, 'The platform upgrade change this ticket is part of');
+    assert.strictEqual(found.precedentAvailable, false, 'missing SMC precedent must not count against a live draft');
+  });
+
+  await test('the precedent check parser ignores ids it was not given', () => {
+    const v = parseJudgement('{"candidates":[{"id":"P1","verdict":"identical"},{"id":"P9","verdict":"similar"},{"id":"P2","verdict":"maybe"}],"linked":[{"id":"L1","relation":"same incident"}]}', 2, 1);
+    assert.deepStrictEqual([...v.candidates.keys()], [0]);
+    assert.strictEqual(v.linked.get(0), 'same incident');
+    assert.strictEqual(parseJudgement('no json here', 2, 1), null);
+  });
+
+  await test('a near-identical resolved ticket raises confidence; a similar one does not', () => {
+    const ctx = zertoCtx();
+    const docs = [{ doc: { id: 'd' }, score: 3 }];
+    const base = assessConfidence(ctx, docs, [], { precedentAvailable: false });
+    assert.strictEqual(base.level, 'medium');
+    const identical = assessConfidence(ctx, docs, [], { precedentAvailable: false, precedentMatch: { verdict: 'identical', ticketId: '6001' } });
+    assert.strictEqual(identical.level, 'high');
+    assert.match(identical.boost, /#6001.*medium to high/);
+    const similar = assessConfidence(ctx, docs, [], { precedentAvailable: false, precedentMatch: { verdict: 'similar', ticketId: '6002' } });
+    assert.strictEqual(similar.level, 'medium');
+    const noSopSimilar = assessConfidence(ctx, [], [], { precedentAvailable: false, precedentMatch: { verdict: 'similar', ticketId: '6002' } });
+    assert.strictEqual(noSopSimilar.level, 'low', 'a merely similar ticket must not stop the draft abstaining');
+    const noSop = assessConfidence(ctx, [], [], { precedentAvailable: false, precedentMatch: { verdict: 'identical', ticketId: '6001' } });
+    assert.strictEqual(noSop.level, 'medium');
+    assert.strictEqual(noSop.grounding, 'precedent');
+    const vague = assessConfidence({ ...ctx, problem: 'Undetermined' }, docs, [], { precedentAvailable: false, precedentMatch: { verdict: 'identical', ticketId: '6001' } });
+    assert.strictEqual(vague.level, 'medium', 'an unclassified ticket must not reach high on precedent');
+  });
+
+  await test("a value only another ticket has is flagged with where it came from", () => {
+    const fc = checkDraftFacts('<p>We cleared the VRA on <code>esx-acme-07</code>.</p>', { id: '1', notes: [] }, [], [{ id: '6001', workNotes: 'Cleared the stale VRA on host esx-acme-07.' }]);
+    assert.deepStrictEqual(fc.unsupported, [{ value: 'esx-acme-07', kind: 'hostname', foundIn: 'ticket #6001' }]);
+  });
+
+  await test('the prompt labels linked and similar tickets, names the client, and never claims redaction', () => {
+    const ctx = zertoCtx();
+    const precedent = [{
+      ticket: {
+        id: '6001', subject: 'Zerto ZVM upgrade failed - rollback', client: 'Other Co', closedAt: '2026-09-01', matchedOn: 'same problem', replies: 'We rolled back.', workNotes: 'Cleared VRA.',
+      },
+      score: 9,
+      relevance: { verdict: 'identical', reason: 'same failed upgrade' },
+    }];
+    const linked = [{ id: '7001', subject: 'Parent change', relationship: 'Child of', status: 'Open', relation: 'the upgrade change', found: true }];
+    const msg = buildUserMessage(ctx, [], precedent, { reasons: [], grounding: 'precedent' }, [], '', linked);
+    assert.match(msg, /## Linked tickets[\s\S]*Linked #7001[\s\S]*How it relates: the upgrade change/);
+    assert.match(msg, /## Similar resolved tickets[\s\S]*client: Other Co[\s\S]*NEAR-IDENTICAL/);
+    assert.match(msg, /INTERNAL work notes \(never quote\)/);
+    assert.doesNotMatch(msg, /already redacted/);
+  });
+
+  await test('ticket links open the SMC console page, not the API path', () => {
+    // links.js reads SMC_BASE_URL when loaded, so load a private copy with it set.
+    const saved = process.env.SMC_BASE_URL;
+    const cached = require.cache[require.resolve('../server/links')];
+    delete require.cache[require.resolve('../server/links')];
+    process.env.SMC_BASE_URL = 'https://app.expedient.com/';
+    try {
+      assert.strictEqual(require('../server/links').ticketUrl('3717433'), 'https://app.expedient.com/ticket/3717433/note/index');
+    } finally {
+      if (saved === undefined) delete process.env.SMC_BASE_URL; else process.env.SMC_BASE_URL = saved;
+      require.cache[require.resolve('../server/links')] = cached;
+    }
+  });
+
+  await test('grading calls use minimal reasoning and the aux model; a model that refuses the effort is retried without it', async () => {
+    const openwebuiProvider = require('../server/providers/openwebui');
+    const bodies = [];
+    const fake = async (url, init) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      if (body.reasoning_effort) return fakeResponse(400, { error: 'Unsupported parameter: reasoning_effort' });
+      return fakeResponse(200, { choices: [{ message: { content: '{"verdicts":[]}' } }] });
+    };
+    await withEnv({
+      OWUI_URL: 'https://owui.test/api', OWUI_API_KEY: 'k', ONEPANE_MODEL: 'big-model', ONEPANE_AUX_MODEL: 'fast-model', ONEPANE_AUX_REASONING: undefined,
+    }, () => withFetch(fake, async () => {
+      await openwebuiProvider.complete({ system: 's', user: 'u' });
+      await openwebuiProvider.complete({ system: 's', user: 'u' });
+    }));
+    assert.deepStrictEqual(bodies.map((b) => [b.model, b.reasoning_effort || null]), [
+      ['fast-model', 'minimal'], ['fast-model', null], ['fast-model', null],
+    ]);
+  });
+
+  await test('Ask and suggestions never search SMC history', async () => {
+    history.resetCaches();
+    const { fake, calls } = fakeSmc();
+    await withEnv(SMC_ENV, () => withFetch(fake, async () => {
+      const ticket = { ...liveVpnTicket(), id: '5000002' };
+      await getSuggestions(ticket, { provider: 'mock', asOf: AS_OF, ticketOrigin: 'smc' });
+    }));
+    assert.strictEqual(calls.length, 0, calls.join('\n'));
+  });
 
   console.log(`\n${passed} passed, ${failures.length} failed\n`);
   if (failures.length) process.exit(1);

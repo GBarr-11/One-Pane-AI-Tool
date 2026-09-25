@@ -48,6 +48,27 @@ function latestAiSummary(ticket) {
   return ai.length ? ai[ai.length - 1] : null;
 }
 
+/**
+ * What the ticket is about, per the existing AI summary: its "Problem Summary"
+ * and "Technical Details" sections, as plain text.
+ *
+ * On a long ticket this is often the only place the topic is written down.
+ * The subject can be generic ("Service Transition Notification") and the
+ * latest customer message can be a meeting link, while the summary names the
+ * BGP default route and the Meraki devices. It is a search source only. It is
+ * model-written, so it never overrides the thread as a record of facts.
+ */
+function summaryTopic(aiSummary) {
+  if (!aiSummary) return '';
+  const text = String(aiSummary).replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '');
+  const sections = [];
+  for (const label of ['Problem Summary', 'Technical Details']) {
+    const m = new RegExp(`${label}\\s*:\\s*([\\s\\S]*?)(?=\\n\\s*[A-Z][A-Za-z &]+:|$)`).exec(text);
+    if (m) sections.push(m[1].trim());
+  }
+  return sections.join('\n');
+}
+
 function daysBetween(a, b) {
   return Math.floor(Math.abs(new Date(a) - new Date(b)) / 86400000);
 }
@@ -102,6 +123,10 @@ function buildContext(ticket, opts = {}) {
     severity: ticket.severity,
     category: ticket.category,
     problem: ticket.problem,
+    // SMC ids, when the ticket came from the API; null for a page scrape.
+    clientId: ticket.clientId ?? null,
+    categoryId: ticket.categoryId ?? null,
+    problemId: ticket.problemId ?? null,
     type: ticket.type,
     queue: ticket.queue,
     assignedTo: ticket.assignedTo,
@@ -111,10 +136,13 @@ function buildContext(ticket, opts = {}) {
     relatedTickets: ticket.relatedTickets,
 
     noteCount: ticket.notes.length,
+    // Internal notes are in here too: the prompt labels them (thread.js) so
+    // their facts can inform a reply without being quoted to the customer.
     thread: customerVisibleNotes(ticket).map((n) => ({
       author: n.author,
       role: n.role,
       at: n.at,
+      visibility: n.visibility || 'All',
       body: n.body,
     })),
 
@@ -126,16 +154,18 @@ function buildContext(ticket, opts = {}) {
 
     aiSummary: aiSummary ? aiSummary.body : null,
     summaryCaveat: assessSummaryStaleness(ticket, aiSummary, lastClient, asOf),
+    summaryTopic: summaryTopic(aiSummary && aiSummary.body),
 
     /** Free-text blob used as the retrieval query. */
     retrievalText: [
       ticket.subject,
       ticket.category,
       ticket.problem,
+      summaryTopic(aiSummary && aiSummary.body),
       lastClient ? lastClient.body : '',
       customerVisibleNotes(ticket).slice(-3).map((n) => n.body).join(' '),
     ].join(' '),
   };
 }
 
-module.exports = { buildContext, lastClientMessage, latestAiSummary };
+module.exports = { buildContext, lastClientMessage, latestAiSummary, summaryTopic };

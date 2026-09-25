@@ -34,7 +34,8 @@ const CONFIDENCE_LABEL = { high: 'High', medium: 'Medium', low: 'Low' };
 
 const SOURCE_TAG = {
   techdoc: 'Techdoc',
-  ticket: 'Related ticket',
+  ticket: 'Similar ticket',
+  linked: 'Linked in SMC',
   thread: 'This ticket',
 };
 
@@ -55,13 +56,14 @@ const TONES = [
  * @param {(question: string) => Promise<object>} handlers.onAsk
  * @param {() => Promise<void>} handlers.onPolish
  * @param {() => Promise<{label: string, instruction: string}[]>} handlers.onSuggest
+ * @param {(vote: object) => Promise<object>} [handlers.onFeedback] thumbs up/down on a cited SOP
  * @param {() => void} [handlers.onDismiss] the analyst hit Start over - clears
  *   this extension's memory of what it last wrote, so a subsequent Generate
  *   replaces it rather than stacking underneath
  * @param {boolean} [handlers.askEnabled]
  */
 export function createPanelContent({
-  onGenerate, onAsk, onPolish, onSuggest, onDismiss, onRecheck, askEnabled = true,
+  onGenerate, onAsk, onPolish, onSuggest, onFeedback, onDismiss, onRecheck, askEnabled = true,
 }) {
   const element = document.createElement('div');
   element.className = 'panel';
@@ -87,6 +89,14 @@ export function createPanelContent({
     polishBusy: false,
     /** Brief confirmation flash after a successful polish. */
     polished: false,
+    /** Source votes this panel has sent, by doc id: 'up' | 'down'. */
+    votes: {},
+    /** Live pipeline stages for the running draft or Ask, in the order they started. */
+    progress: [],
+    /** Which action the stages belong to: 'draft' | 'ask' | null. */
+    progressFor: null,
+    /** When that action started, for the elapsed-time readout. */
+    startedAt: null,
   };
 
   /* ---------------- rendering ---------------- */
@@ -118,11 +128,60 @@ export function createPanelContent({
                 ${state.busy ? 'disabled' : ''}>${esc(state.instruction)}</textarea>
 
       <button class="primary" data-act="${action}" ${state.busy ? 'disabled' : ''}>
-        ${state.busy
+        ${state.busy && state.progressFor === 'draft'
           ? `<span class="spinner"></span> ${action === 'revise' ? 'Revising…' : 'Generating…'}`
           : `${GLYPH_SVG} ${esc(actionLabel)}`}
-      </button>`;
+      </button>
+      ${state.busy && state.progressFor === 'draft' ? progressView() : ''}`;
   }
+
+  /**
+   * What the pipeline is doing right now, under the button that started it.
+   *
+   * Only stages that have actually started are listed. The server reports
+   * each one as it begins and ends (server/progress.js), and which ones run
+   * depends on the ticket and the configuration, so listing a fixed plan
+   * would show steps that never come. Details are counts ("6 similar ·
+   * 1 linked"), never ticket text. Kept after a failure, so the analyst can
+   * see which step it stopped at.
+   */
+  function progressView() {
+    const failed = !state.busy;
+    const rows = state.progress.length
+      ? state.progress
+      : [{ stage: 'start', label: 'Connecting to One Pane', state: 'active', detail: '' }];
+    return `
+      <div class="progress ${failed ? 'stopped' : ''}" data-el="progress" role="status" aria-live="polite">
+        <div class="progress-head">
+          <span>${failed ? 'Stopped' : 'Working on it'}</span>
+          ${state.startedAt ? `<span class="mono" data-since="${state.startedAt}">${elapsed(state.startedAt)}</span>` : ''}
+        </div>
+        <ol class="steps">${rows.map(stepRow).join('')}</ol>
+      </div>`;
+  }
+
+  function stepRow(s) {
+    const mark = {
+      active: '<span class="step-spin" aria-hidden="true"></span>',
+      done: '<span class="step-mark" aria-hidden="true">✓</span>',
+      skipped: '<span class="step-mark" aria-hidden="true">–</span>',
+      error: '<span class="step-mark" aria-hidden="true">!</span>',
+    }[s.state] || '';
+    const time = s.state === 'active' && s.at
+      ? `<span class="mono" data-since="${s.at}">${elapsed(s.at)}</span>`
+      : (s.ms != null && s.state !== 'skipped' ? `<span class="mono">${(s.ms / 1000).toFixed(1)}s</span>` : '');
+    return `
+      <li class="step ${esc(s.state)}">
+        <span class="step-dot">${mark}</span>
+        <span class="step-text">
+          <span class="step-label">${esc(s.label)}</span>
+          ${s.detail ? `<span class="step-detail">${esc(s.detail)}</span>` : ''}
+        </span>
+        ${time}
+      </li>`;
+  }
+
+  const elapsed = (since) => `${Math.max(0, Math.floor((Date.now() - Number(since)) / 1000))}s`;
 
   /**
    * "Suggest a next step": an optional, analyst-initiated read on the ticket -
@@ -217,7 +276,8 @@ export function createPanelContent({
     if (state.error) {
       return `
         <div class="status err">${esc(state.error)}</div>
-        <button class="primary" data-act="generate">Try again</button>`;
+        <button class="primary" data-act="generate">Try again</button>
+        ${state.progressFor === 'draft' && state.progress.length ? progressView() : ''}`;
     }
 
     if (state.result) return draftResult(state.result);
@@ -238,9 +298,15 @@ export function createPanelContent({
   function draftResult(r) {
     const c = r.confidence || {};
     const level = c.level || 'low';
-    const detail = level === 'low'
-      ? 'not enough grounding — asked clarifying questions instead'
-      : `grounded in ${c.sourceCount} source${c.sourceCount === 1 ? '' : 's'}`;
+    let detail = `grounded in ${c.sourceCount} source${c.sourceCount === 1 ? '' : 's'}`;
+    if (level === 'low') detail = 'not enough grounding — asked clarifying questions instead';
+    else if (c.grounding === 'thread') detail = 'grounded in the ticket thread — no SOP covers this';
+    else if (c.grounding === 'precedent') detail = 'grounded in a resolved SMC ticket — no SOP covers this';
+    const unsupported = (r.factCheck && r.factCheck.unsupported) || [];
+    // Values the draft took from another ticket: most likely another client's
+    // host or IP carried over, so they are named apart from the rest.
+    const borrowed = unsupported.filter((u) => u.foundIn);
+    const missing = unsupported.filter((u) => !u.foundIn);
 
     const linksOff = r.links && !r.links.tickets && !r.links.techdocs;
 
@@ -259,10 +325,25 @@ export function createPanelContent({
         <span class="meter ${esc(level)}" aria-hidden="true"><i></i><i></i><i></i></span>
         ${CONFIDENCE_LABEL[level] || esc(level)} <small>— ${esc(detail)}</small>
       </div>
+      ${c.boost ? `<div class="hint" style="text-align:left">${esc(c.boost)}.</div>` : ''}
 
       ${(c.reasons || []).length ? `
         <div class="heads-up">
           <strong>Why confidence is limited</strong>${c.reasons.map(esc).join('. ')}.
+        </div>` : ''}
+
+      ${borrowed.length ? `
+        <div class="heads-up">
+          <strong>From another ticket</strong>
+          Only found in a related ticket, not this one - make sure they apply here:
+          ${borrowed.map((u) => `<code>${esc(u.value)}</code> (${esc(u.foundIn)})`).join(', ')}.
+        </div>` : ''}
+
+      ${missing.length ? `
+        <div class="heads-up">
+          <strong>Check before sending</strong>
+          Not found in the ticket or the cited SOPs:
+          ${missing.map((u) => `<code>${esc(u.value)}</code>`).join(', ')}.
         </div>` : ''}
 
       ${r.caveat ? `
@@ -278,7 +359,9 @@ export function createPanelContent({
       ${steeringControls('Apply changes', 'revise')}
 
       <div class="label">Sources used</div>
-      ${(r.sources || []).map(sourceRow).join('')}
+      ${(r.sources || []).map((s) => sourceRow(s, r)).join('')}
+      ${hiddenSources(r.kb)}
+      ${hiddenTickets(r.history)}
       ${linksOff ? `
         <div class="hint" style="text-align:left">
           Sources link out once <code>SMC_BASE_URL</code> and <code>ONEPANE_KB_BASE_URL</code> are set.
@@ -296,12 +379,40 @@ export function createPanelContent({
   }
 
   /**
+   * The SOPs the relevance checks turned away, collapsed. Hiding them silently
+   * would leave "why didn't it use the X SOP?" unanswerable, and the list is
+   * also how a wrong rejection gets noticed.
+   */
+  function hiddenSources(kb) {
+    const rejected = (kb && kb.rejected) || [];
+    if (!rejected.length) return '';
+    return `
+      <details class="hidden-sources">
+        <summary>${rejected.length} SOP${rejected.length === 1 ? '' : 's'} hidden as not relevant</summary>
+        <ul>${rejected.map((d) => `<li>${esc(d.title)} — ${esc(d.reason)}</li>`).join('')}</ul>
+      </details>`;
+  }
+
+  /** The same, for similar SMC tickets the precedent check or a vote turned away. */
+  function hiddenTickets(history) {
+    const rejected = (history && history.rejected) || [];
+    if (!rejected.length) return '';
+    return `
+      <details class="hidden-sources">
+        <summary>${rejected.length} similar ticket${rejected.length === 1 ? '' : 's'} hidden as not relevant</summary>
+        <ul>${rejected.map((d) => `<li>${esc(d.id)} ${esc(d.title)} — ${esc(d.reason)}</li>`).join('')}</ul>
+      </details>`;
+  }
+
+  /**
    * A citation the analyst cannot open in one click is one they will not check,
    * so link every source that has a resolvable URL and leave the rest as text.
    */
-  function sourceRow(s) {
+  function sourceRow(s, result) {
     const url = safeUrl(s.url);
     const name = `${esc(s.ref)} — ${esc(s.label)}`;
+    const voted = state.votes[s.ref];
+    const canVote = (s.kind === 'techdoc' || s.kind === 'ticket') && onFeedback && result && result.ticketId;
 
     return `
       <div class="source">
@@ -311,8 +422,36 @@ export function createPanelContent({
             ? `<a class="name" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${name}</a>`
             : `<div class="name">${name}</div>`}
           <div class="tag">${esc(s.detail)}</div>
+          ${s.why ? `<div class="tag why ${esc(s.relevance || '')}">${esc(s.why)}</div>` : ''}
+          ${canVote ? `
+            <div class="vote" role="group" aria-label="Was this source relevant?">
+              <button class="vote-btn ${voted === 'up' ? 'on' : ''}" data-vote="up" data-ref="${esc(s.ref)}"
+                      aria-pressed="${voted === 'up'}" title="Relevant to this ticket">👍</button>
+              <button class="vote-btn ${voted === 'down' ? 'on' : ''}" data-vote="down" data-ref="${esc(s.ref)}"
+                      aria-pressed="${voted === 'down'}" title="Not relevant - hide it on this ticket">👎</button>
+              ${voted === 'down' ? '<span class="tag">Hidden on this ticket from the next draft on</span>' : ''}
+            </div>` : ''}
         </div>
-        ${s.score != null ? `<span class="score">${esc(s.score.toFixed(2))}</span>` : ''}
+        ${relevanceMeter(s)}
+      </div>`;
+  }
+
+  /**
+   * Relevance as a bar and a percentage (server: relevancePct in generate.js).
+   * Bands follow the relevance verdict: 70%+ covers the ticket, 35-65% is a
+   * partial match, and an unchecked page never reads above 55%. The raw
+   * lexical score stays in the tooltip for tuning. The width is set in
+   * wire(), through the CSSOM, because a host page's CSP may block inline
+   * style attributes.
+   */
+  function relevanceMeter(s) {
+    if (s.relevancePct == null) return '';
+    const pct = Math.max(0, Math.min(100, Number(s.relevancePct) || 0));
+    const band = pct >= 70 ? 'high' : pct >= 35 ? 'medium' : 'low';
+    return `
+      <div class="rel ${band}" title="Relevance ${pct}% · lexical score ${esc(s.score != null ? s.score.toFixed(2) : 'n/a')}">
+        <span class="rel-pct">${pct}%</span>
+        <span class="rel-bar" aria-hidden="true"><i data-pct="${pct}"></i></span>
       </div>`;
   }
 
@@ -325,8 +464,9 @@ export function createPanelContent({
       <textarea data-el="question" placeholder="e.g. Summarize what's happened on this ticket so far"
                 ${state.busy ? 'disabled' : ''}>${esc(state.question)}</textarea>
       <button class="primary" data-act="ask" ${state.busy ? 'disabled' : ''}>
-        ${state.busy ? '<span class="spinner"></span> Asking…' : 'Ask'}
+        ${state.busy && state.progressFor === 'ask' ? '<span class="spinner"></span> Asking…' : 'Ask'}
       </button>
+      ${state.progressFor === 'ask' && (state.busy || (state.error && state.progress.length)) ? progressView() : ''}
 
       ${state.error ? `<div class="status err" style="margin-top:13px">${esc(state.error)}</div>` : ''}
 
@@ -335,7 +475,8 @@ export function createPanelContent({
         <div class="answer" data-el="answer"></div>
         ${(state.answer.sources || []).length ? `
           <div class="label">Sources used</div>
-          ${state.answer.sources.map(sourceRow).join('')}` : ''}
+          ${state.answer.sources.map((s) => sourceRow(s, state.answer)).join('')}` : ''}
+        ${hiddenSources(state.answer.kb)}
         ${(state.answer.citations || []).length ? `
           <div class="citations">
             <strong>Sources</strong>
@@ -389,6 +530,14 @@ export function createPanelContent({
     const answer = element.querySelector('[data-el="answer"]');
     if (answer && state.answer) answer.textContent = state.answer.response || '';
 
+    element.querySelectorAll('.rel-bar i[data-pct]').forEach((bar) => {
+      bar.style.width = `${bar.dataset.pct}%`;
+    });
+
+    element.querySelectorAll('[data-vote]').forEach((btn) => {
+      btn.onclick = () => vote(btn.dataset.ref, btn.dataset.vote);
+    });
+
     const actions = {
       generate, revise, ask, polish, suggest, dismiss, copyDiagnostics, recheck,
     };
@@ -404,6 +553,60 @@ export function createPanelContent({
     });
   }
 
+  /* ---------------- progress ---------------- */
+
+  let ticker = null;
+
+  /** Start tracking stages for one action, with a once-a-second elapsed tick. */
+  function beginProgress(kind) {
+    state.progress = [];
+    state.progressFor = kind;
+    state.startedAt = Date.now();
+    clearInterval(ticker);
+    // Only the time readouts change each second, so only they are touched.
+    ticker = setInterval(() => {
+      element.querySelectorAll('[data-since]').forEach((el) => { el.textContent = elapsed(el.dataset.since); });
+    }, 1000);
+  }
+
+  /** One stage event from the server: add it, or update the row it belongs to. */
+  function onStage(event) {
+    if (!event || !event.stage) return;
+    const row = {
+      stage: String(event.stage),
+      label: String(event.label || event.stage),
+      state: String(event.state || 'active'),
+      detail: String(event.detail || ''),
+      ms: typeof event.ms === 'number' ? event.ms : null,
+    };
+    const i = state.progress.findIndex((s) => s.stage === row.stage);
+    if (i >= 0) {
+      // Keep a detail that arrived with "active" when "done" brings none.
+      state.progress[i] = { ...state.progress[i], ...row, detail: row.detail || state.progress[i].detail };
+    } else {
+      state.progress.push({ ...row, at: Date.now() });
+    }
+    // Redraw only the progress block: a full render per event would flicker
+    // and reset the scroll position several times a second.
+    const box = element.querySelector('[data-el="progress"]');
+    if (box) box.outerHTML = progressView();
+    else render();
+  }
+
+  /** Stop tracking. A success clears the stages; a failure keeps them on screen. */
+  function endProgress(failed) {
+    clearInterval(ticker);
+    ticker = null;
+    if (!failed) {
+      state.progress = [];
+      state.progressFor = null;
+      state.startedAt = null;
+    } else {
+      // Anything still spinning is where it stopped.
+      state.progress = state.progress.map((s) => (s.state === 'active' ? { ...s, state: 'error', ms: Date.now() - s.at } : s));
+    }
+  }
+
   /* ---------------- actions ---------------- */
 
   /**
@@ -417,8 +620,10 @@ export function createPanelContent({
     const previous = state.result;
     state.busy = true;
     state.error = null;
+    beginProgress('draft');
     render();
 
+    let failed = false;
     try {
       state.result = await onGenerate({
         tones: state.tones,
@@ -427,12 +632,15 @@ export function createPanelContent({
         // Anything after the first draft replaces what we already put in the
         // reply box, rather than stacking another copy underneath it.
         replace: Boolean(previous),
+        onProgress: onStage,
       });
     } catch (err) {
+      failed = true;
       state.error = err.message;
       state.result = previous;
     } finally {
       state.busy = false;
+      endProgress(failed);
       render();
     }
   }
@@ -471,6 +679,35 @@ export function createPanelContent({
     }
   }
 
+  /**
+   * Send a vote on a cited SOP. Optimistic: the button shows it at once, and
+   * a failure puts it back and says so.
+   */
+  async function vote(ref, value) {
+    const result = state.tab === 'ask' ? state.answer : state.result;
+    const source = result && (result.sources || []).find((s) => s.ref === ref && (s.kind === 'techdoc' || s.kind === 'ticket'));
+    if (!source || state.votes[ref] === value) return;
+
+    const previous = state.votes[ref];
+    state.votes = { ...state.votes, [ref]: value };
+    render();
+    try {
+      await onFeedback({
+        ticketId: result.ticketId,
+        docId: source.ref,
+        title: source.label,
+        vote: value,
+        verdict: source.relevance,
+        problem: result.ticketMeta && result.ticketMeta.problem,
+        category: result.ticketMeta && result.ticketMeta.category,
+      });
+    } catch (err) {
+      state.votes = { ...state.votes, [ref]: previous };
+      state.error = `Could not save that vote: ${err.message}`;
+      render();
+    }
+  }
+
   async function ask() {
     const question = state.question.trim();
     if (!question || state.busy) return;
@@ -478,14 +715,18 @@ export function createPanelContent({
     state.busy = true;
     state.error = null;
     state.answer = null;
+    beginProgress('ask');
     render();
 
+    let failed = false;
     try {
-      state.answer = await onAsk(question);
+      state.answer = await onAsk(question, onStage);
     } catch (err) {
+      failed = true;
       state.error = err.message;
     } finally {
       state.busy = false;
+      endProgress(failed);
       render();
     }
   }
@@ -579,6 +820,11 @@ export function createPanelContent({
       state.error = null;
       state.answer = null;
       state.instruction = '';
+      state.votes = {};
+      if (!state.busy) {
+        state.progress = [];
+        state.progressFor = null;
+      }
       // Stale suggestions for the previous ticket would be actively
       // misleading; the analyst re-asks for the new ticket's with the button.
       state.suggestions = [];

@@ -13,7 +13,7 @@ import {
 import { createOverlay } from '../panel/overlay.js';
 import { createPanelContent } from '../panel/panel.js';
 import {
-  MSG, sendToBackground, extensionAlive, isContextInvalidated,
+  MSG, sendToBackground, streamFromBackground, extensionAlive, isContextInvalidated,
 } from '../shared/messages.js';
 import { loadConfig, saveConfig, loadOverlayState, saveOverlayState } from '../shared/config.js';
 
@@ -58,7 +58,7 @@ async function main() {
     askEnabled: config.askEnabled,
 
     async onGenerate({
-      tones, instruction, previousDraft, replace,
+      tones, instruction, previousDraft, replace, onProgress,
     }) {
       // Re-read rather than trusting the ticket captured at mount: on a SPA the
       // analyst may have moved on, and drafting against a stale ticket would
@@ -66,13 +66,14 @@ async function main() {
       const fresh = profile.readTicket(document, window.location) || current;
       if (!fresh) throw new Error('No ticket detected on this page');
 
-      const result = await sendToBackground(MSG.GENERATE_DRAFT, {
+      // Streamed so the panel can show each pipeline stage as it happens.
+      const result = await streamFromBackground(MSG.GENERATE_DRAFT, {
         ticketId: fresh.ticketId,
         ticket: fresh.ticket,
         tones,
         instruction,
         previousDraft,
-      });
+      }, onProgress);
 
       const target = profile.findReplyBox(document);
       writeDraft(target?.el, { html: result.draftHtml, text: result.draftText }, { replace });
@@ -90,17 +91,17 @@ async function main() {
       replaceReplyBox(box, { html: result.html, text: result.text });
     },
 
-    async onAsk(question) {
+    async onAsk(question, onProgress) {
       // Same re-read-rather-than-trust-mount reasoning as onGenerate: the
       // analyst may have moved to a different ticket since the panel opened.
       const fresh = profile.readTicket(document, window.location) || current;
       if (!fresh) throw new Error('No ticket detected on this page');
 
-      return sendToBackground(MSG.ASK_AI_CTRL, {
+      return streamFromBackground(MSG.ASK_AI_CTRL, {
         ticketId: fresh.ticketId,
         ticket: fresh.ticket,
         question,
-      });
+      }, onProgress);
     },
 
     /**
@@ -128,6 +129,9 @@ async function main() {
      * first instead of replacing it, since `replace` is computed from the
      * panel's own state, which Start over has already cleared.
      */
+    /** Thumbs up/down on a cited SOP. Needs no page state beyond the ids. */
+    onFeedback: (vote) => sendToBackground(MSG.SOURCE_FEEDBACK, vote),
+
     onDismiss: () => resetDraftTracking(),
 
     onRecheck: () => syncToPage(),

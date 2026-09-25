@@ -196,7 +196,9 @@ function rankPrecedent(pool, ctx, { limit = 2, asOf = new Date().toISOString() }
  * fluent the generated text sounds. A draft with nothing behind it must be
  * labeled as such rather than presented with the same authority as a grounded one.
  */
-function assessConfidence(ctx, docs, precedent, { precedentAvailable = true } = {}) {
+function assessConfidence(ctx, docs, precedent, {
+  precedentAvailable = true, relevance = null, thread = null, precedentMatch = null,
+} = {}) {
   const topScore = docs.length ? docs[0].score : 0;
   const reasons = [];
 
@@ -230,8 +232,73 @@ function assessConfidence(ctx, docs, precedent, { precedentAvailable = true } = 
   // A vague, unclassified ticket should never present as confidently grounded.
   if (ctx.problem === 'Undetermined' && level === 'high') level = 'medium';
 
+  /*
+   * The relevance check (relevance.js), when it ran or tried to. A lexical
+   * score says a page shares words with the ticket; only a "direct" verdict
+   * says it covers the ticket. So high needs one, and an unchecked or
+   * partial-only source list is capped at medium. A page judged direct is
+   * grounding even when it scored low on words, so it lifts low to medium.
+   */
+  if (relevance && relevance.error && docs.length) {
+    reasons.push('Relevance of these SOPs could not be checked');
+    if (level === 'high') level = 'medium';
+  } else if (relevance && relevance.checked && docs.length) {
+    if (!relevance.direct) {
+      reasons.push('No SOP directly covers this request - the closest are partial matches');
+      if (level === 'high') level = 'medium';
+    } else if (level === 'low') {
+      level = 'medium';
+    }
+  }
+
+  /*
+   * No usable SOP is not the same as not knowing. A follow-up where we have
+   * already told the customer what is happening (a change number, a
+   * hostname, a date) can be drafted from the thread, which restates and
+   * advances what is already there. Only a thread with nothing concrete in it
+   * (a first "it's broken") still abstains and asks questions. `grounding`
+   * tells the prompt and the panel which case this is.
+   */
+  let grounding = docs.length ? 'sop' : 'none';
+  let boost = null;
+
+  /*
+   * A resolved SMC ticket the precedent check (precedent.js) judged
+   * "identical" - the same problem and the same ask - is as good a guide as an
+   * SOP, often better: it is how this exact case was actually closed. So it
+   * lifts low to medium and medium to high, short of the hard caps: an
+   * unclassified ticket, no customer message to answer, or SOPs whose
+   * relevance could not be checked. A "similar" ticket is context only and
+   * moves nothing: on a live FIM ticket the judge called a disk-space alert
+   * ticket similar, and that is not grounds to stop asking questions.
+   * Grant, 2026-09-25: confidence may rise when a related ticket is very close
+   * or identical.
+   */
+  if (precedentMatch && precedentMatch.verdict === 'identical') {
+    const blocked = ctx.problem === 'Undetermined' || !ctx.lastClientMessage || (relevance && relevance.error && docs.length);
+    const before = level;
+    if (level === 'low') level = 'medium';
+    else if (level === 'medium' && !blocked) level = 'high';
+    if (level !== before) {
+      if (!docs.length) grounding = 'precedent';
+      boost = `A near-identical resolved ticket (#${precedentMatch.ticketId}) raised confidence from ${before} to ${level}`;
+      const i = reasons.indexOf('No techdoc matched this ticket');
+      if (i >= 0) reasons[i] = 'No SOP covers this ticket - drafted from a resolved SMC ticket and the thread';
+    }
+  }
+
+  if (level === 'low' && thread && thread.grounded) {
+    // Lifted by the thread, so the thread is the grounding, even if a weak SOP matched.
+    level = 'medium';
+    grounding = 'thread';
+    const i = reasons.indexOf('No techdoc matched this ticket');
+    if (i >= 0) reasons[i] = 'No SOP covers this ticket - drafted from the ticket thread only';
+  }
+
   return {
     level,
+    grounding,
+    boost,
     topScore: Number(topScore.toFixed(2)),
     sourceCount: docs.length + precedent.length,
     reasons,
